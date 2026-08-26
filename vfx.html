@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VFX Library</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="vfx-page">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">∞</span>
+          <div class="brand-copy"><span class="overline">CHARACTER SYSTEM / 03</span><h1>FIGHTER FORGE</h1></div>
+        </div>
+        <nav class="tabs" aria-label="Fighter Forge sections">
+          <a class="tab" href="index.html"><span>01</span>ARENA ↗</a>
+          <a class="tab" href="editor.html"><span>02</span>EDITOR ↗</a>
+        </nav>
+        <div class="top-status"><i></i><span>ASSET BANK ONLINE</span><b id="asset-count">0 FRAMES</b></div>
+      </header>
+
+      <main class="vfx-workspace">
+        <section class="vfx-library-panel">
+          <div class="vfx-heading">
+            <div><span class="overline">MOVESET ASSET BANK / TRANSPARENT PNG</span><h2>VFX library</h2></div>
+            <span class="view-index">03</span>
+          </div>
+          <div class="vfx-toolbar">
+            <div id="vfx-filters" class="vfx-filters" aria-label="Filter visual effects"></div>
+            <label class="vfx-search"><span>⌕</span><input id="vfx-search" type="search" placeholder="Search sparks, slash, fire…" aria-label="Search visual effects" /></label>
+          </div>
+          <div class="vfx-results-line"><span id="result-count">0 ASSETS</span><span class="line"></span><small>CLICK AN ASSET TO INSPECT</small></div>
+          <div id="vfx-grid" class="vfx-grid"></div>
+        </section>
+
+        <aside class="vfx-inspector-panel">
+          <div class="inspector-heading"><div><span class="overline">LIVE INSPECTOR</span><h2 id="inspector-name">Select an asset</h2></div><span id="inspector-role" class="asset-role">—</span></div>
+          <div class="inspector-stage checkerboard"><img id="inspector-image" alt="" /><span id="inspector-frame" class="frame-readout">01 / 01</span><button id="play-toggle" class="play-toggle" type="button" aria-label="Pause preview">Ⅱ</button></div>
+          <div id="inspector-tags" class="inspector-tags"></div>
+          <div class="inspector-meta"><div><span>FORMAT</span><strong>PNG / ALPHA</strong></div><div><span>FRAMES</span><strong id="inspector-frames">—</strong></div><div><span>FPS</span><strong id="inspector-fps">—</strong></div></div>
+          <div class="timeline"><div id="timeline-strip" class="timeline-strip"></div><i id="timeline-playhead"></i></div>
+          <p id="inspector-note" class="inspector-note"></p>
+          <div class="hook-block"><div class="hook-heading"><span>AI HOOK</span><small>DROP INTO A MOVE VISUAL</small></div><pre id="vfx-snippet"></pre></div>
+          <div class="inspector-actions"><button id="copy-hook" class="primary full" type="button">COPY MOVE HOOK <span>↗</span></button><button id="copy-path" class="secondary full" type="button">COPY FRAME PATH <span>⌘</span></button></div>
+          <div id="copy-status" class="status" aria-live="polite"></div>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="vfx.js"></script>
+  </body>
+</html>

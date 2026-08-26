@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Character Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="editor-page">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">∞</span>
+          <div class="brand-copy"><span class="overline">CHARACTER SYSTEM / 02</span><h1>FIGHTER FORGE</h1></div>
+        </div>
+        <nav class="tabs" aria-label="Fighter Forge sections">
+          <a class="tab" href="index.html"><span>01</span>ARENA ↗</a>
+          <span class="tab active"><span>02</span>EDITOR</span>
+        </nav>
+        <div class="top-status"><i></i><span>BLUEPRINT WORKSHOP</span><b id="editor-mode">NEW FIGHTER</b></div>
+      </header>
+
+      <main class="standalone-editor">
+        <section class="editor-identity-panel">
+          <div class="view-heading"><div><span id="editor-overline" class="overline">IDENTITY WORKSHOP</span><h2 id="editor-heading">Build a fighter</h2></div><span class="view-index">02</span></div>
+          <div class="editor-scroll">
+            <div class="editor-callout"><strong>Start with the feeling.</strong><span>Give the fighter a point of view first. The moves will make more sense when their attitude does.</span></div>
+            <div class="editor-quick-guide" aria-label="Editor workflow"><span><b>1</b> Identity</span><span><b>2</b> Combat style</span><span><b>3</b> Save or forge</span></div>
+            <div class="editor-section-title"><span>IDENTITY</span><small>What makes them them?</small></div>
+            <div class="two-fields"><label>Character name<input id="character-name" maxlength="24" placeholder="Fighter name" required /><small class="field-help">This stays yours when AI forges the moves.</small></label><label>Author<input id="character-author" maxlength="24" placeholder="Forge Author" /><small class="field-help">Shown on the fighter card.</small></label></div>
+            <label class="simple-personality">Personality<input id="character-personality" maxlength="80" placeholder="e.g. cocky but loyal" /><small class="field-help">A short read on how they fight and speak.</small></label>
+            <label class="simple-backstory">Backstory<textarea id="character-backstory" maxlength="240" placeholder="Where they came from and what drives them..."></textarea><small class="field-help">One or two sentences is plenty.</small></label>
+            <label class="prompt-box"><span>Core concept</span><textarea id="character-prompt" maxlength="700" placeholder="A lightning-fast arcade boxer with neon gloves, storm dashes, and a heavy uppercut..."></textarea><small>Used by Forge AI as the design brief. Be specific about movement, attitude, and signature ideas.</small></label>
+            <div class="editor-section-title"><span>PLAY FEEL</span><small>How much freedom should their game plan have?</small></div>
+            <div class="form-row tuning-row"><label>Buttons<select id="character-buttons"><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label><label>Combo aptitude<input id="character-combo" type="range" min="1" max="5" value="3" /><output id="combo-value">BALANCED</output></label></div>
+            <label>Attack emojis<input id="character-emojis" maxlength="60" value="👊 ⚡ 🦵 💥" /><small class="field-help">These flavor the fighter’s move callouts. Separate emojis with spaces.</small></label>
+            <label class="file-pick"><span>+</span> REPLACE PORTRAIT <small>OPTIONAL</small><input id="portrait-upload" type="file" accept="image/*" /></label>
+            <div id="portrait-status" class="status"></div>
+          </div>
+        </section>
+
+        <section class="editor-moves-panel">
+          <div class="view-heading"><div><span class="overline">COMBAT BLUEPRINT</span><h2>Moveset editor</h2></div><span id="move-count" class="view-index">0 / 5</span></div>
+          <div class="editor-scroll">
+            <div class="lab-note"><span class="signal"></span><div><strong>Build the rhythm.</strong><span>Name the move and frame data first. Open a recipe when you want to shape its effect, path, or animation.</span></div></div>
+            <div class="moves-toolbar"><div><strong>Quick starts</strong><span>Drop in a useful foundation, then make it yours.</span></div><div class="move-presets"><button type="button" data-preset="charge">+ CHARGE</button><button type="button" data-preset="dash-attack">+ DASH</button><button type="button" data-preset="bomb">+ BOMB</button></div></div>
+            <fieldset class="moveset-fieldset"><legend>Special moves <small>UP TO 5 / AI CAN USE ALL OF THEM</small></legend><div id="special-list"></div><button type="button" id="add-special" class="small-button">+ ADD CUSTOM MOVE <span>↗</span></button></fieldset>
+            <div class="recipe-tools"><span>Advanced recipes</span><button type="button" id="expand-recipes" class="tiny-button">EXPAND ALL</button><button type="button" id="collapse-recipes" class="tiny-button">COLLAPSE ALL</button></div>
+            <details class="code-details"><summary>Developer view <small>Generated JavaScript</small><span>+</span></summary><pre id="code-preview">// Save or forge a character to inspect its combat script.</pre></details>
+            <div class="editor-actions"><button id="save-fighter" class="primary full">SAVE FIGHTER <span>↗</span></button><button id="forge-with-ai" class="secondary full">FORGE MOVES WITH AI <span>✦</span></button><a class="secondary full" href="index.html">BACK TO ARENA</a></div>
+            <div id="editor-dirty" class="editor-dirty" aria-live="polite"></div>
+            <div id="editor-status" class="status"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <dialog id="asset-request-dialog" class="asset-dialog" aria-labelledby="asset-request-title">
+      <form method="dialog">
+        <span class="overline">OPTIONAL VISUAL REQUEST</span>
+        <h2 id="asset-request-title">Give this move a custom sprite?</h2>
+        <p id="asset-request-copy"></p>
+        <label class="file-pick asset-upload-pick"><span>+</span> CHOOSE IMAGE <small>PNG / WEBP / GIF</small><input id="asset-request-upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /></label>
+        <div id="asset-request-status" class="status"></div>
+        <div class="asset-dialog-actions"><button type="button" id="asset-use-emoji" class="secondary">USE EMOJI INSTEAD</button><button type="button" id="asset-attach" class="primary">ATTACH SPRITE <span>↗</span></button></div>
+      </form>
+    </dialog>
+    <script type="module" src="editor.js"></script>
+  </body>
+</html>

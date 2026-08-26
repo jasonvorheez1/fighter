@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fighter Arena</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="arena-page">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">∞</span>
+          <div class="brand-copy"><span class="overline">CHARACTER SYSTEM / 01</span><h1>FIGHTER FORGE</h1></div>
+        </div>
+        <nav class="tabs" aria-label="Fighter Forge sections">
+          <span class="tab active"><span>01</span>SELECT</span>
+          <a class="tab" href="editor.html"><span>02</span>EDITOR ↗</a>
+        </nav>
+        <div class="top-status"><i></i><span>SIMULATION ONLINE</span><b id="fighter-count">1 FIGHTER</b></div>
+      </header>
+
+      <main class="main-grid">
+        <section class="arena-column" aria-label="AI battle arena">
+          <div class="arena-heading">
+            <div><span class="overline">LIVE PREVIEW / AI VS AI</span><h2>THE ARENA</h2></div>
+            <div class="arena-meta"><span>60 FPS</span><span>BUILD 0.4</span></div>
+          </div>
+          <div class="arena-wrap">
+            <canvas id="arena" width="1280" height="720"></canvas>
+            <div class="scanlines"></div>
+            <div class="match-ui">
+              <div class="nameplate left"><span id="left-name">KUNG FU MAN</span><b id="left-wins">0</b><div class="health"><i id="left-hp"></i></div><div class="guard"><i id="left-guard"></i></div><div class="meter"><i id="left-meter"></i></div></div>
+              <div class="round-display"><span id="mode-label">READY ROOM</span><strong id="round-text">SELECT</strong><em id="timer">--</em></div>
+              <div class="nameplate right"><span id="right-name">KUNG FU MAN</span><b id="right-wins">0</b><div class="health"><i id="right-hp"></i></div><div class="guard"><i id="right-guard"></i></div><div class="meter"><i id="right-meter"></i></div></div>
+            </div>
+            <div id="banter" class="banter" aria-live="polite"></div>
+            <div id="move-callout" class="move-callout" aria-live="polite"><span class="move-callout-type">MOVE</span><strong id="move-callout-name"></strong><small id="move-callout-detail"></small></div>
+            <div id="combo-readout" class="combo-readout" aria-live="polite"></div>
+            <div id="result" class="result" aria-live="polite"></div>
+            <button id="rematch" class="rematch" hidden>RUN IT BACK <span>↗</span></button>
+            <div class="arena-footer"><span>GROUND / TRAINING DECK</span><span>FIGHTERS THINK FOR THEMSELVES</span></div>
+          </div>
+        </section>
+
+        <aside class="forge-panel">
+          <section id="roster-view" class="view active">
+            <div class="select-header"><div><span class="overline">FIGHTER FORGE / MATCH SETUP</span><h2>Choose your fighter</h2></div><div class="select-header-meta"><span>WATCH MODE</span><b>01 / 01</b></div></div>
+            <div class="select-slots" aria-label="Current matchup">
+              <button class="select-slot active" data-slot="0"><span class="slot-label">PLAYER 1 <i>01</i></span><span class="slot-portrait" id="player-pick-portrait">👊</span><strong id="player-pick-name">KUNG FU MAN</strong><small id="player-pick-meta">CLASSIC BALANCED MARTIAL ARTIST</small><em>READY</em></button>
+              <div class="versus" aria-hidden="true"><span>VS</span><i></i></div>
+              <button class="select-slot" data-slot="1"><span class="slot-label">CPU <i>02</i></span><span class="slot-portrait" id="cpu-pick-portrait">👊</span><strong id="cpu-pick-name">KUNG FU MAN</strong><small id="cpu-pick-meta">CLASSIC BALANCED MARTIAL ARTIST</small><em>READY</em></button>
+            </div>
+            <div class="roster-intro"><span id="select-prompt">Choose Player 1</span><span class="line"></span><small>CLICK A FIGHTER TO ASSIGN · CLICK A SLOT TO SWITCH SIDES</small></div>
+            <div id="roster" class="roster"></div>
+            <div class="select-actions"><a class="secondary full create-fighter-link" href="editor.html">CREATE A FIGHTER <span>↗</span></a><button id="start-match" class="primary full">START MATCH <span>↗</span></button></div>
+          </section>
+
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
