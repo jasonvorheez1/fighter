@@ -8,10 +8,10 @@ let currentFighter = null;
 let portraitUrl = null;
 let activeAssetRequest = null;
 
-const types = ["melee", "projectile", "combo", "trap", "grapple", "freeze", "teleport", "pillar", "bomb"];
+const types = ["melee", "projectile", "combo", "trap", "grapple", "freeze", "teleport", "pillar", "bomb", "gun"];
 const effects = ["arc", "orb", "slashes", "rune", "beam", "burst", "grapple", "freeze", "teleport", "pillar"];
 const elements = ["fire", "ice", "stone", "lightning", "shadow", "energy"];
-const motions = ["none", "projectile", "trap", "dash", "dash-attack", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar"];
+const motions = ["none", "projectile", "trap", "dash", "dash-attack", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar", "gun", "wall-slam", "spin", "multi-uppercut", "fly-in", "ground-pound"];
 const patterns = ["straight", "arc", "fan", "boomerang", "orbit", "rain"];
 const styles = ["strike", "kick", "spin", "grapple", "slam", "dash", "cast"];
 const windups = ["none", "coil", "crouch", "reach", "hop", "spin"];
@@ -21,25 +21,25 @@ const roles = ["auto", "light-punch", "medium-punch", "heavy-punch", "light-kick
 
 const frameDefaults = {
   melee: [7, 2, 18, 14], projectile: [18, 3, 30, 10], combo: [5, 3, 24, 18], trap: [10, 3, 22, 16],
-  grapple: [9, 12, 28, 24], freeze: [14, 3, 28, 16], teleport: [5, 3, 24, 18], pillar: [16, 4, 30, 20], bomb: [14, 3, 32, 18]
+  grapple: [9, 12, 28, 24], freeze: [14, 3, 28, 16], teleport: [5, 3, 24, 18], pillar: [16, 4, 30, 20], bomb: [14, 3, 32, 18], gun: [10, 2, 26, 11]
 };
 const visualDefaults = {
   melee: { effect:"arc", color:"#f7d35b", secondary:"#ffffff", size:58, emoji:"✦" }, projectile: { effect:"orb", color:"#56d9ff", secondary:"#d8ff3e", size:22, emoji:"✦" },
   combo: { effect:"slashes", color:"#ff6c61", secondary:"#ffd05d", size:62, emoji:"✧" }, trap: { effect:"rune", color:"#bd8cff", secondary:"#56d9ff", size:72, emoji:"◇" },
   grapple: { effect:"grapple", color:"#ff9f43", secondary:"#fff2c2", size:68, emoji:"⛓", element:"energy" }, freeze: { effect:"freeze", color:"#73e7ff", secondary:"#eefcff", size:30, emoji:"❄", element:"ice" },
-  teleport: { effect:"teleport", color:"#d28cff", secondary:"#56d9ff", size:74, emoji:"◇", element:"shadow" }, pillar: { effect:"pillar", color:"#ff7043", secondary:"#ffd05d", size:86, emoji:"▲", element:"fire" }, bomb: { effect:"burst", color:"#ff7043", secondary:"#ffd05d", size:62, emoji:"💣", element:"fire" }
+  teleport: { effect:"teleport", color:"#d28cff", secondary:"#56d9ff", size:74, emoji:"◇", element:"shadow" }, pillar: { effect:"pillar", color:"#ff7043", secondary:"#ffd05d", size:86, emoji:"▲", element:"fire" }, bomb: { effect:"burst", color:"#ff7043", secondary:"#ffd05d", size:62, emoji:"💣", element:"fire" }, gun: { effect:"orb", color:"#ffe66d", secondary:"#ffffff", size:16, emoji:"•", element:"energy" }
 };
 const behaviorDefaults = {
   melee: { motion:"none", speed:0, radius:0, shots:1 }, projectile: { motion:"projectile", pattern:"straight", speed:390, radius:22, shots:1 }, combo: { motion:"none", speed:0, radius:0, shots:1 },
   trap: { motion:"trap", speed:0, radius:68, shots:1, lifetime:1.7 }, grapple: { motion:"grapple", speed:300, radius:0, shots:1, hold:.2, finisher:"slam" },
   freeze: { motion:"projectile", pattern:"straight", speed:360, radius:28, shots:1, freeze:.95, status:"freeze" }, teleport: { motion:"teleport", speed:0, radius:0, shots:1, offset:92 },
-  pillar: { motion:"pillar", speed:0, radius:76, shots:1, lifetime:1.45, status:"none", element:"fire" }, bomb: { motion:"bomb", pattern:"straight", speed:330, radius:78, shots:1, fuse:.62, dashDistance:96, status:"none", element:"fire" }
+  pillar: { motion:"pillar", speed:0, radius:76, shots:1, lifetime:1.45, status:"none", element:"fire" }, bomb: { motion:"bomb", pattern:"straight", speed:330, radius:78, shots:1, fuse:.62, dashDistance:96, status:"none", element:"fire" }, gun: { motion:"gun", pattern:"straight", speed:1150, radius:13, shots:1 }
 };
 const animationDefaults = {
   melee: { style:"strike", windup:"coil", contact:"snap", finish:"recoil", intensity:.9 }, projectile: { style:"cast", windup:"coil", contact:"energy", finish:"recoil", intensity:.9 },
   combo: { style:"spin", windup:"coil", contact:"slash", finish:"spin", intensity:1 }, trap: { style:"cast", windup:"crouch", contact:"energy", finish:"recoil", intensity:.8 },
   grapple: { style:"grapple", windup:"reach", contact:"grab", finish:"slam", intensity:1.15 }, freeze: { style:"cast", windup:"coil", contact:"energy", finish:"recoil", intensity:.9 },
-  teleport: { style:"dash", windup:"hop", contact:"body", finish:"snap", intensity:1.1 }, pillar: { style:"cast", windup:"crouch", contact:"energy", finish:"slam", intensity:1 }, bomb: { style:"cast", windup:"crouch", contact:"energy", finish:"slam", intensity:1.1 }
+  teleport: { style:"dash", windup:"hop", contact:"body", finish:"snap", intensity:1.1 }, pillar: { style:"cast", windup:"crouch", contact:"energy", finish:"slam", intensity:1 }, bomb: { style:"cast", windup:"crouch", contact:"energy", finish:"slam", intensity:1.1 }, gun: { style:"cast", windup:"reach", contact:"energy", finish:"snap", intensity:.8 }
 };
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", "\"":"&quot;"}[c])); }
@@ -103,6 +103,12 @@ function normalizeMove(move = {}, fighterConfig = {}) {
   const diveKick = behavior.motion === "dive-kick" || /dive.?kick|meteor kick|stomp kick/.test(moveName);
   if (rapidJab) behavior.motion = "rapid-jab";
   if (diveKick) behavior.motion = "dive-kick";
+  if (/gun|pistol|revolver|rifle|blaster|magnum|bullet|shotgun/.test(moveName)) behavior.motion = "gun";
+  if (/wall ?slam|wall ?punch|into the wall/.test(moveName)) behavior.motion = "wall-slam";
+  if (/spin|whirl|cyclone|tornado|twister/.test(moveName)) behavior.motion = "spin";
+  if (/shoryu|rising (fist|dragon|fury)|multi.?upper|triple.?upper/.test(moveName)) behavior.motion = "multi-uppercut";
+  if (/fly.?in|soar|swoop|comet|air ?rush/.test(moveName)) behavior.motion = "fly-in";
+  if (/ground ?pound|earth ?shaker|seismic|meteor ?slam/.test(moveName)) behavior.motion = "ground-pound";
   behavior.rapidHits = rapidJab ? Math.round(number(behavior.rapidHits, 2, 8, 5)) : 1;
   behavior.rapidInterval = number(behavior.rapidInterval, .045, .18, .075);
   behavior.status = ["none", "freeze"].includes(behavior.status) ? behavior.status : (type === "freeze" ? "freeze" : "none");

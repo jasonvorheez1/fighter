@@ -112,7 +112,8 @@ export const VFX_DEFAULTS = {
   freeze: { mainVfx: "layer_magic_03_a", hitVfx: "hit_symmetrical_3" },
   teleport: { mainVfx: "layer_window_01_a", hitVfx: "hit_stylized_explosion" },
   pillar: { mainVfx: "layer_fire_01_a", hitVfx: "hit_bottom_directional" },
-  bomb: { mainVfx: "main_stylized_explosion", hitVfx: "hit_stylized_explosion" }
+  bomb: { mainVfx: "main_stylized_explosion", hitVfx: "hit_stylized_explosion" },
+  gun: { mainVfx: "main_vfx_start", hitVfx: "hit_round_spark" }
 };
 
 export function getVfx(id) {
