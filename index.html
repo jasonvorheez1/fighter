@@ -51,9 +51,19 @@
               <div class="versus" aria-hidden="true"><span>VS</span><i></i></div>
               <button class="select-slot" data-slot="1"><span class="slot-label">CPU <i>02</i></span><span class="slot-portrait" id="cpu-pick-portrait">👊</span><strong id="cpu-pick-name">KUNG FU MAN</strong><small id="cpu-pick-meta">CLASSIC BALANCED MARTIAL ARTIST</small><em>READY</em></button>
             </div>
-            <div class="roster-intro"><span id="select-prompt">Choose Player 1</span><span class="line"></span><small>CLICK A FIGHTER TO ASSIGN · CLICK A SLOT TO SWITCH SIDES</small></div>
-            <div id="roster" class="roster"></div>
-            <div class="select-actions"><a class="secondary full create-fighter-link" href="editor.html">CREATE A FIGHTER <span>↗</span></a><button id="start-match" class="primary full">START MATCH <span>↗</span></button></div>
+            <div class="select-body">
+              <div class="roster-col">
+                <div class="roster-intro"><span id="select-prompt">Choose Player 1</span><span class="line"></span><small>← ↑ ↓ → MOVE · ENTER ASSIGN · TAB SWITCH SIDE · R RANDOM</small></div>
+                <div id="roster" class="roster" role="listbox" aria-label="Fighter roster" tabindex="0"></div>
+              </div>
+              <aside id="dossier" class="dossier" aria-live="polite"></aside>
+            </div>
+            <div class="select-actions">
+              <a class="secondary create-fighter-link" href="editor.html">CREATE <span>↗</span></a>
+              <button id="random-pick" class="secondary">RANDOM</button>
+              <button id="mirror-pick" class="secondary">MIRROR</button>
+              <button id="start-match" class="primary full">START MATCH <span>↗</span></button>
+            </div>
           </section>
 
         </aside>

@@ -459,7 +459,7 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .arena-page:not(.in-match) .main-grid::after { position:absolute; right:5vw; bottom:6vh; left:5vw; height:1px; content:""; background:linear-gradient(90deg,transparent,var(--cyan),transparent); opacity:.4; pointer-events:none; }
 .arena-page:not(.in-match) .arena-column { display:none; }
 .arena-page:not(.in-match) .forge-panel { position:relative; z-index:1; inset:auto; width:100%; max-width:none; min-height:calc(100vh - 58px); max-height:none; overflow:visible; background:transparent; border:0; border-radius:0; box-shadow:none; backdrop-filter:none; }
-.arena-page:not(.in-match) #roster-view { width:min(1240px,100%); min-height:calc(100vh - 58px); margin:0 auto; padding:clamp(24px,4vw,45px) clamp(18px,6vw,88px) 24px; display:grid; grid-template-rows:auto auto auto minmax(125px,1fr) auto; gap:0; }
+.arena-page:not(.in-match) #roster-view { width:min(1240px,100%); min-height:calc(100vh - 58px); margin:0 auto; padding:clamp(24px,4vw,45px) clamp(18px,6vw,88px) 24px; display:grid; grid-template-rows:auto auto minmax(320px,1fr) auto; gap:0; }
 .arena-page:not(.in-match) .select-header { display:flex; justify-content:space-between; align-items:flex-end; padding-bottom:20px; border-bottom:1px solid #ffffff22; }
 .arena-page:not(.in-match) .select-header h2 { margin:8px 0 0; color:#fff; font-size:clamp(40px,5.2vw,66px); line-height:.78; letter-spacing:1px; }
 .select-header-meta { display:flex; align-items:flex-end; gap:16px; color:var(--muted); font:9px 'DM Mono',monospace; letter-spacing:1px; }
@@ -493,7 +493,7 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .arena-page:not(.in-match) .versus i { display:none; }
 .arena-page:not(.in-match) .roster-intro { margin:0; padding:11px 0 13px; color:#fff; font-size:17px; }
 .arena-page:not(.in-match) .roster-intro small { font-size:8px; }
-.arena-page:not(.in-match) .roster { grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); align-content:start; gap:10px; min-height:125px; max-height:150px; padding:0 2px 12px 1px; }
+.arena-page:not(.in-match) .roster { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); align-content:start; gap:10px; min-height:0; max-height:none; padding:0 4px 12px 1px; }
 .arena-page:not(.in-match) .fighter-card { min-height:130px; padding:7px; background:#111c25cc; border-color:#ffffff1d; border-radius:3px; }
 .arena-page:not(.in-match) .fighter-card.selected { background:#1e2c20; border-color:var(--lime); }
 .arena-page:not(.in-match) .fighter-card.focused { border-color:var(--cyan); }
@@ -545,3 +545,78 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .result[data-tone="perfect"] { color:#ffd05d; }
 .result[data-tone="draw"] { color:#9fb3c8; }
 .result[data-tone="win"] { color:#ff6c61; }
+
+/* ── Character select: roster + dossier ──────────────────────────────────── */
+.select-body { min-height:0; display:contents; }
+.arena-page:not(.in-match) .select-body { display:grid; grid-template-columns:minmax(0,1fr) minmax(268px,326px); gap:clamp(14px,2.4vw,30px); min-height:0; padding:6px 0 4px; }
+.arena-page:not(.in-match) .roster-col { min-height:0; display:flex; flex-direction:column; }
+.roster:focus-visible { outline:2px solid var(--cyan); outline-offset:3px; }
+
+.fighter-card .portrait { position:relative; }
+.card-archetype { position:absolute; right:0; bottom:0; left:0; padding:3px 5px; color:#cfe9ff; background:#040a10cc; font:900 7px 'DM Mono',monospace; font-style:normal; letter-spacing:.9px; text-align:center; }
+.arena-page:not(.in-match) .fighter-card.focused { border-color:var(--cyan); box-shadow:0 0 0 1px var(--cyan), 0 10px 26px #00000066; transform:translateY(-2px); }
+.arena-page:not(.in-match) .fighter-card.selected.focused { border-color:var(--lime); box-shadow:0 0 0 1px var(--lime), 0 10px 26px #00000066; }
+
+.dossier { min-height:0; display:none; overflow:auto; padding:15px 16px 18px; background:linear-gradient(160deg,#12222edd,#0a1119dd); border:1px solid #ffffff22; border-radius:3px; box-shadow:10px 10px 0 #02070b99; }
+.arena-page:not(.in-match) .dossier { display:block; }
+.dossier-top { display:grid; grid-template-columns:74px minmax(0,1fr); gap:12px; align-items:center; }
+.dossier-portrait { width:74px; height:74px; display:grid; place-items:center; overflow:hidden; background:linear-gradient(145deg,#315a6b,#111923); border:1px solid #ffffff26; border-radius:2px; font-size:32px; }
+.dossier-portrait img { width:100%; height:100%; object-fit:cover; }
+.dossier-id { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.dossier-id strong { overflow:hidden; color:#fff; font-size:25px; line-height:.86; text-overflow:ellipsis; white-space:nowrap; }
+.dossier-id small { color:var(--muted); font:8px 'DM Mono',monospace; letter-spacing:.8px; }
+.archetype { align-self:flex-start; margin-top:3px; padding:3px 7px; color:#0a1016; background:var(--cyan); font:900 8px 'DM Mono',monospace; letter-spacing:1.1px; }
+.archetype[data-archetype="rushdown"] { background:var(--coral); color:#1a0d0c; }
+.archetype[data-archetype="zoner"] { background:#8fd0ff; }
+.archetype[data-archetype="grappler"] { background:#ffb057; color:#1e1206; }
+.archetype[data-archetype="balanced"] { background:var(--lime); color:#101408; }
+.dossier-blurb { margin:12px 0 14px; color:#b7c6cf; font-size:12px; line-height:1.45; }
+
+.dossier-stats { display:grid; gap:6px; padding-bottom:14px; border-bottom:1px solid #ffffff1c; }
+.stat { display:grid; grid-template-columns:44px minmax(0,1fr) 20px; gap:8px; align-items:center; color:var(--muted); font:900 8px 'DM Mono',monospace; letter-spacing:.8px; }
+.stat i { height:6px; background:#0a1119; border:1px solid #ffffff1f; }
+.stat b { display:block; height:100%; background:linear-gradient(90deg,var(--cyan),var(--lime)); transition:width .18s; }
+.stat em { color:#fff; font-style:normal; text-align:right; }
+
+.dossier-heading { display:block; padding:14px 0 8px; color:var(--muted); }
+.dossier-moves { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.dossier-moves li { display:grid; gap:2px; padding:7px 8px; background:#0b141ccc; border-left:2px solid var(--cyan); }
+.move-name { color:#fff; font-size:13px; font-weight:900; letter-spacing:.3px; }
+.move-tags { color:var(--lime); font:900 7px 'DM Mono',monospace; letter-spacing:.9px; }
+.move-frames { display:flex; gap:5px; align-items:baseline; color:#fff; font:900 11px 'DM Mono',monospace; }
+.move-frames i { margin-right:5px; color:var(--muted); font:400 7px 'DM Mono',monospace; font-style:normal; letter-spacing:.6px; }
+.dossier-quote { margin:14px 0 0; padding:9px 11px; color:#cfe0e8; background:#0b141c99; border-left:2px solid var(--coral); font-size:12px; font-style:italic; }
+
+.arena-page:not(.in-match) .select-actions { grid-template-columns:auto auto auto minmax(220px,1fr); }
+
+@media (max-width:900px) {
+  .arena-page:not(.in-match) .select-body { grid-template-columns:1fr; }
+  .arena-page:not(.in-match) .dossier { max-height:300px; }
+  .arena-page:not(.in-match) .select-actions { grid-template-columns:1fr 1fr; }
+}
+
+/* The compact in-match panel strips cards down to a name. The full select
+   screen is not that panel, so give it its portraits and badges back. */
+.arena-page:not(.in-match) .fighter-pick { display:grid; grid-template-rows:84px minmax(0,1fr) auto; }
+.arena-page:not(.in-match) .fighter-card .portrait { display:grid; height:84px; }
+.arena-page:not(.in-match) .fighter-card span.fighter-info>span { display:block; }
+.arena-page:not(.in-match) .fighter-card em { display:block; margin-top:auto; }
+.arena-page:not(.in-match) .edit-fighter { display:block; }
+.arena-page:not(.in-match) .create-fighter-link { display:grid; }
+.arena-page:not(.in-match) .fighter-card { min-height:158px; }
+
+/* Keep the whole select screen on one screen: the roster scrolls inside its
+   own track instead of pushing the action bar past the fold. */
+@media (min-width:901px) {
+  .arena-page:not(.in-match) .forge-panel { min-height:0; height:calc(100vh - 58px); }
+  .arena-page:not(.in-match) #roster-view { height:100%; min-height:0; overflow:hidden;
+    grid-template-rows:auto auto minmax(0,1fr) auto; }
+  .arena-page:not(.in-match) .select-header { padding-bottom:14px; }
+  .arena-page:not(.in-match) .select-header h2 { font-size:clamp(32px,3.6vw,48px); }
+  .arena-page:not(.in-match) .select-slot { min-height:0; padding:12px 16px 11px; }
+  .arena-page:not(.in-match) .select-slots { padding:14px 0 10px; }
+  .arena-page:not(.in-match) .slot-portrait { min-height:0; max-height:clamp(74px,11vh,116px); }
+  .arena-page:not(.in-match) .select-slot strong { font-size:clamp(21px,2.1vw,29px); }
+  .arena-page:not(.in-match) .roster-intro { padding:8px 0 9px; font-size:15px; }
+  .arena-page:not(.in-match) .select-actions { padding-top:11px; }
+}

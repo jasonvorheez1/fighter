@@ -11,6 +11,7 @@ const kungFuMan = {
 };
 
 let fighters = [kungFuMan], selected = [kungFuMan.id, kungFuMan.id], activeSlot = 0, uploadedPortrait = null, editingId = null;
+let cursor = 0, rosterColumns = 1;
 let spriteSheet = null, spriteThumbs = {};
 let battle = null, lastFrame = 0, comboReadoutTimer = 0, moveCalloutTimer = 0;
 const FIGHT_START_LEFT = 480, FIGHT_START_RIGHT = 800;
@@ -29,9 +30,87 @@ async function loadRoster() {
   renderRoster();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHARACTER SELECT
+// The dossier reads the same numbers the fight engine reads, so what the select
+// screen promises about a fighter is what the arena actually does with it.
+// ─────────────────────────────────────────────────────────────────────────────
+const ARCHETYPE_COPY = {
+  rushdown: { label: "RUSHDOWN", blurb: "Fast buttons, relentless pressure, lives in your face." },
+  zoner:    { label: "ZONER",    blurb: "Controls space from range and punishes the approach." },
+  grappler: { label: "GRAPPLER", blurb: "Walks you down and cashes out in command grabs." },
+  balanced: { label: "BALANCED", blurb: "No glaring holes, answers at every range." }
+};
+
+function fighterProfile(fighter) {
+  const shell = { fighter };
+  const moves = combatMoves(shell);
+  const startups = moves.map(move => moveFrames(move).startup);
+  const averageStartup = startups.reduce((sum, value) => sum + value, 0) / Math.max(1, startups.length);
+  const reach = Math.max(...moves.map(move => moveReach(move)), 70);
+  const heavy = moves.filter(move => move.variant === "heavy" || isLauncher(move) || isGrapple(move)).length;
+  const stats = {
+    power: Math.round(Math.min(100, 34 + heavy / Math.max(1, moves.length) * 46 + moves.length * 4)),
+    speed: Math.round(Math.min(100, Math.max(10, 118 - averageStartup * 5.2))),
+    reach: Math.round(Math.min(100, (reach - 70) / 450 * 100)),
+    combo: Math.round(Math.min(100, (Number(fighter.config?.combo) || 2) / 5 * 100))
+  };
+  return { moves, stats, archetype: fighterArchetype(shell) };
+}
+
+function statRow(label, value) {
+  return `<div class="stat"><span>${label}</span><i><b style="width:${value}%"></b></i><em>${String(value).padStart(2, "0")}</em></div>`;
+}
+
+function renderDossier(fighter) {
+  const host = $("#dossier"); if (!host) return;
+  const { moves, stats, archetype } = fighterProfile(fighter);
+  const copy = ARCHETYPE_COPY[archetype] || ARCHETYPE_COPY.balanced;
+  const config = fighter.config || {};
+  const moveRows = moves.slice(0, 6).map(move => {
+    const frames = moveFrames(move);
+    const tags = [isLauncher(move) ? "LAUNCHER" : "", isGrapple(move) ? "GRAB" : "", isRanged(move) ? "RANGED" : ""].filter(Boolean);
+    return `<li><span class="move-name">${escapeHtml(move.name || "Strike")}</span>
+      <span class="move-tags">${escapeHtml(move.type || "melee").toUpperCase()}${tags.length ? ` · ${tags.join(" · ")}` : ""}</span>
+      <span class="move-frames">${frames.startup}<i>startup</i>${frames.hitstun}<i>stun</i>${Math.round(moveReach(move))}<i>reach</i></span></li>`;
+  }).join("");
+  host.innerHTML = `
+    <div class="dossier-top">
+      <span class="dossier-portrait">${avatar(fighter)}</span>
+      <div class="dossier-id">
+        <span class="overline">DOSSIER</span>
+        <strong>${escapeHtml(fighter.name)}</strong>
+        <small>BY ${escapeHtml(fighter.author)}</small>
+        <span class="archetype" data-archetype="${archetype}">${copy.label}</span>
+      </div>
+    </div>
+    <p class="dossier-blurb">${escapeHtml(config.style || copy.blurb)}</p>
+    <div class="dossier-stats">
+      ${statRow("POWER", stats.power)}${statRow("SPEED", stats.speed)}${statRow("REACH", stats.reach)}${statRow("COMBO", stats.combo)}
+    </div>
+    <span class="overline dossier-heading">MOVE LIST / ${moves.length}</span>
+    <ul class="dossier-moves">${moveRows}</ul>
+    ${config.banter?.[0] ? `<blockquote class="dossier-quote">“${escapeHtml(config.banter[0])}”</blockquote>` : ""}`;
+}
+
+function assignFighter(id, slot = activeSlot) {
+  selected[slot] = id;
+  activeSlot = slot === 0 ? 1 : 0;
+  renderRoster();
+}
+
+function moveCursor(delta) {
+  if (!fighters.length) return;
+  cursor = (cursor + delta + fighters.length) % fighters.length;
+  renderRoster();
+  const card = document.querySelector(`[data-index="${cursor}"]`);
+  card?.scrollIntoView({ block: "nearest" });
+}
+
 function renderRoster() {
   if (!fighters.some(f => f.id === selected[0])) selected[0] = fighters[0].id;
   if (!fighters.some(f => f.id === selected[1])) selected[1] = fighters[0].id;
+  cursor = Math.max(0, Math.min(fighters.length - 1, cursor));
   $("#fighter-count").textContent = `${fighters.length} FIGHTER${fighters.length === 1 ? "" : "S"}`;
   const left = fighterById(selected[0]), right = fighterById(selected[1]);
   $("#player-pick-name").textContent = left.name.toUpperCase();
@@ -50,25 +129,61 @@ function renderRoster() {
     $("#timer").textContent = "--";
     $("#left-wins").textContent = "0";
     $("#right-wins").textContent = "0";
-    $("#left-hp").style.width = "100%";
-    $("#right-hp").style.width = "100%";
+    for (const id of ["#left-hp", "#right-hp", "#left-guard", "#right-guard"]) { const el = $(id); if (el) el.style.width = "100%"; }
+    for (const id of ["#left-meter", "#right-meter"]) { const el = $(id); if (el) el.style.width = "0%"; }
   }
-  $("#roster").innerHTML = fighters.map(f => {
+  $("#roster").innerHTML = fighters.map((f, index) => {
     const p1 = selected[0] === f.id, cpu = selected[1] === f.id;
-    const label = p1 && cpu ? "P1 / CPU" : p1 ? "P1 SELECTED" : cpu ? "CPU SELECTED" : "SELECT";
+    const label = p1 && cpu ? "P1 / CPU" : p1 ? "P1" : cpu ? "CPU" : "SELECT";
+    const archetype = fighterProfile(f).archetype;
     const editAction = f.example ? "" : `<a class="edit-fighter" href="editor.html?id=${encodeURIComponent(f.id)}">EDIT <span>↗</span></a>`;
-    return `<article class="fighter-card ${p1 || cpu ? "selected" : ""} ${activeSlot === 0 && p1 || activeSlot === 1 && cpu ? "focused" : ""}"><button class="fighter-pick" data-fighter="${escapeHtml(f.id)}"><span class="portrait">${avatar(f)}</span><span class="fighter-info"><strong>${escapeHtml(f.name)}</strong><span>BY ${escapeHtml(f.author)} · ${f.config?.buttons || 3} BTN</span></span><em>${label}</em></button>${editAction}</article>`;
+    return `<article class="fighter-card ${p1 || cpu ? "selected" : ""} ${index === cursor ? "focused" : ""}" data-index="${index}">
+      <button class="fighter-pick" data-fighter="${escapeHtml(f.id)}" role="option" aria-selected="${index === cursor}">
+        <span class="portrait">${avatar(f)}<i class="card-archetype">${(ARCHETYPE_COPY[archetype] || ARCHETYPE_COPY.balanced).label}</i></span>
+        <span class="fighter-info"><strong>${escapeHtml(f.name)}</strong><span>BY ${escapeHtml(f.author)} · ${f.config?.buttons || 3} BTN</span></span>
+        <em>${label}</em>
+      </button>${editAction}</article>`;
   }).join("");
-  document.querySelectorAll("[data-fighter]").forEach((node) => node.onclick = () => {
-    selected[activeSlot] = node.dataset.fighter;
-    activeSlot = activeSlot === 0 ? 1 : 0;
-    renderRoster();
+  document.querySelectorAll("[data-fighter]").forEach((node) => {
+    const index = Number(node.closest("[data-index]").dataset.index);
+    node.onclick = () => { cursor = index; assignFighter(node.dataset.fighter); };
+    // Hovering previews a fighter without committing to them.
+    node.onmouseenter = () => { cursor = index; document.querySelectorAll(".fighter-card").forEach((card, i) => card.classList.toggle("focused", i === index)); renderDossier(fighters[index]); };
   });
+  renderDossier(fighters[cursor] || left);
 }
-
 document.querySelectorAll(".select-slot").forEach(slot => slot.onclick = () => {
   activeSlot = Number(slot.dataset.slot);
   renderRoster();
+});
+
+function rosterColumnCount() {
+  const grid = $("#roster");
+  if (!grid) return 1;
+  return Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length);
+}
+function randomFighterId() { return fighters[Math.floor(Math.random() * fighters.length)].id; }
+
+$("#random-pick").onclick = () => { const id = randomFighterId(); cursor = fighters.findIndex(f => f.id === id); assignFighter(id); };
+$("#mirror-pick").onclick = () => { const id = fighters[cursor]?.id || selected[0]; selected[0] = selected[1] = id; activeSlot = 0; renderRoster(); };
+
+// Arcade selects are driven from the stick. Arrow keys walk the grid, Enter
+// locks the highlighted fighter into the active side, Tab flips sides.
+document.addEventListener("keydown", (event) => {
+  if (document.body.classList.contains("in-match")) return;
+  if (event.target instanceof Element && event.target.matches("input, textarea, select, [contenteditable]")) return;
+  const columns = rosterColumnCount();
+  switch (event.key) {
+    case "ArrowLeft": moveCursor(-1); break;
+    case "ArrowRight": moveCursor(1); break;
+    case "ArrowUp": moveCursor(-columns); break;
+    case "ArrowDown": moveCursor(columns); break;
+    case "Enter": case " ": assignFighter(fighters[cursor].id); break;
+    case "Tab": activeSlot = activeSlot === 0 ? 1 : 0; renderRoster(); break;
+    case "r": case "R": { const id = randomFighterId(); cursor = fighters.findIndex(f => f.id === id); assignFighter(id); break; }
+    default: return;
+  }
+  event.preventDefault();
 });
 
 function moveFrameDefaults(type = "melee") { return type === "projectile" ? { startup:18, active:3, endlag:30, hitstun:10 } : type === "combo" ? { startup:5, active:3, endlag:24, hitstun:18 } : type === "trap" ? { startup:10, active:3, endlag:22, hitstun:16 } : type === "grapple" ? { startup:9, active:12, endlag:28, hitstun:24 } : type === "freeze" ? { startup:14, active:3, endlag:28, hitstun:16 } : type === "teleport" ? { startup:5, active:3, endlag:24, hitstun:18 } : type === "pillar" ? { startup:16, active:4, endlag:30, hitstun:20 } : type === "bomb" ? { startup:14, active:3, endlag:32, hitstun:18 } : { startup:7, active:2, endlag:18, hitstun:14 }; }
@@ -1901,5 +2016,6 @@ async function loadSprites() {
 function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();
 
 // dev inspection hook
+window.__inject = (rows) => { fighters = [kungFuMan, ...rows]; renderRoster(); };
 window.__sim = (seconds, dt = 1 / 60) => { for (let i = 0; i < Math.round(seconds / dt); i++) fightTick(dt); };
 window.__forge = () => battle && ({ phase: battle.phase, clock: battle.clock, hitstop: battle.hitstop, banner: battle.bannerTimer, f: battle.fighters.map(f => ({ hp: +f.hp.toFixed(1), pose: f.pose, cd: +f.cd.toFixed(2), hurt: +f.hurt.toFixed(2), down: f.down && +f.down.t.toFixed(2), gb: +f.guardBroken.toFixed(2), guard: +f.guard.toFixed(0), meter: +f.meter.toFixed(0), blocking: f.blocking, bt: +f.blockTimer.toFixed(2), atk: f.attackState?.label, x: +f.x.toFixed(0), invuln: +f.invuln.toFixed(2), intent: f.ai.intent, arche: f.ai.archetype })) });
