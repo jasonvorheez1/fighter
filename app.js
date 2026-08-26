@@ -268,23 +268,179 @@ function normalizeKnockback(input, type, rawMove = {}) {
   };
 }
 const visualScriptCache = new Map();
-const visualScriptVfx = ["main_slash_color1", "main_slash2_color1", "main_slash3_color2", "main_slash3_color3", "main_musicburst", "main_firework"];
+
+const hexMixCache = new Map();
+function mixHex(hex, target, amount) {
+  const key = `${hex}|${target}|${amount}`;
+  const cached = hexMixCache.get(key); if (cached) return cached;
+  const parse = (value) => { const s = String(value || "").replace("#", ""); return [parseInt(s.slice(0, 2), 16) || 0, parseInt(s.slice(2, 4), 16) || 0, parseInt(s.slice(4, 6), 16) || 0]; };
+  const [r1, g1, b1] = parse(hex), [r2, g2, b2] = parse(target), t = Math.max(0, Math.min(1, amount));
+  const channel = (a, b) => Math.round(a + (b - a) * t).toString(16).padStart(2, "0");
+  const out = `#${channel(r1, r2)}${channel(g1, g2)}${channel(b1, b2)}`;
+  if (hexMixCache.size < 512) hexMixCache.set(key, out);
+  return out;
+}
+
+// Trace the same geometry three times: bloom, body, hot core.
+function glowStroke(trace, color, width, opacity, softness = 1) {
+  const w = Math.max(.6, width), a = Math.max(0, Math.min(1, opacity));
+  if (a <= .01) return;
+  ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = Math.min(48, (w * 3.2 + 9) * softness);
+  ctx.lineWidth = w * 2.7; ctx.globalAlpha = a * .17; trace(); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = w; ctx.globalAlpha = a * .78; trace(); ctx.stroke();
+  ctx.strokeStyle = mixHex(color, "#ffffff", .74); ctx.lineWidth = Math.max(.8, w * .32); ctx.globalAlpha = Math.min(1, a * 1.1); trace(); ctx.stroke();
+  ctx.restore();
+}
+function glowFill(trace, color, opacity, blur = 18) {
+  const a = Math.max(0, Math.min(1, opacity));
+  if (a <= .01) return;
+  ctx.save(); ctx.globalCompositeOperation = "lighter";
+  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = blur;
+  ctx.globalAlpha = a * .55; trace(); ctx.fill();
+  ctx.shadowBlur = 0; ctx.fillStyle = mixHex(color, "#ffffff", .6); ctx.globalAlpha = a; trace(); ctx.fill();
+  ctx.restore();
+}
+const slashVfx = ["main_slash_color1", "main_slash2_color1", "main_slash3_color2", "main_slash3_color3"];
+const burstVfx = ["main_firework", "main_musicburst", "main_stylized_explosion", "main_vfx_start"];
+const visualScriptVfx = [...slashVfx, ...burstVfx];
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFAULT MOVE VISUALS
+// Each motion gets artwork built around what it physically does, animated
+// across the move's own progress so the effect sweeps, expands or trails
+// instead of sitting on screen as a static decal. `p` runs 0..1 over the whole
+// move, `t` is seconds, and `active` is true only during the hit frames.
+// ─────────────────────────────────────────────────────────────────────────────
 function visualScriptFallback(rawMove = {}, type = "melee") {
   const key = `${String(rawMove.name || "unnamed")}::${type}`;
   let seed = 0; for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) >>> 0;
-  const variant = seed % 4, spin = ((seed % 17) - 8) * .12, rays = 4 + (seed % 5), asset = visualScriptVfx[seed % visualScriptVfx.length];
-  if (variant === 0) return `const pulse = .75 + Math.sin(t * ${12 + seed % 9}) * .18;
-api.glow(color, size * .32); api.asset("${asset}", size * .32 * pulse, 0, size * 2.1, active ? .9 : .25, ${spin} + p * .5);
-for (let i = 0; i < ${rays}; i++) { const a = i * Math.PI * 2 / ${rays} + p * ${2 + seed % 4}; api.line(0, 0, Math.cos(a) * size * .88, Math.sin(a) * size * .88, i % 2 ? secondary : color, 3 + i % 3, active ? .82 : .22); }`;
-  if (variant === 1) return `const pulse = .5 + p * .9;
-api.ring(0, 0, size * pulse, color, 4, active ? .85 : .2); api.ring(0, 0, size * (.35 + pulse * .42), secondary, 2, active ? .9 : .18);
-for (let i = 0; i < ${rays}; i++) { const a = i * Math.PI * 2 / ${rays} - t * ${2 + seed % 3}; api.spark(Math.cos(a) * size * .6, Math.sin(a) * size * .6, size * .22, secondary, 3 + i % 3, a); }`;
-  if (variant === 2) return `const sweep = p * Math.PI * ${1.2 + (seed % 7) / 5} - .7;
-api.arc(0, 0, size * (.5 + p * .45), sweep, sweep + ${1.3 + (seed % 5) / 6}, color, 7, active ? .9 : .25); api.arc(0, 0, size * .74, sweep + .35, sweep + 1.05, secondary, 2, active ? .85 : .2);
-api.asset("${asset}", Math.cos(sweep) * size * .55, Math.sin(sweep) * size * .55, size * 1.5, active ? .75 : .18, sweep);`;
-  return `const pulse = 1 + Math.sin(t * ${10 + seed % 8}) * .12;
-api.circle(0, 0, size * .28 * pulse, color, secondary, 3, active ? .9 : .2); api.glow(secondary, size * .55);
-for (let i = 0; i < ${rays}; i++) { const a = i * Math.PI * 2 / ${rays} + p * ${3 + seed % 5}; const inner = size * .25, outer = size * (.75 + (i % 2) * .28); api.line(Math.cos(a) * inner, Math.sin(a) * inner, Math.cos(a) * outer, Math.sin(a) * outer, i % 2 ? color : secondary, 4, active ? .8 : .18); }`;
+  const tilt = ((seed % 13) - 6) * .07;
+  const motion = String(rawMove.behavior?.motion || "").toLowerCase();
+  const name = String(rawMove.name || "").toLowerCase();
+  const burstLike = /bomb|pillar|trap|freeze|gun/.test(`${type} ${motion}`) || /pound|shaker|seismic|quake|blast|nova|burst/.test(name);
+  const pool = burstLike ? burstVfx : slashVfx;
+  const asset = pool[seed % pool.length];
+  const has = (re) => re.test(name);
+
+  // ── Rotating multi-hit ────────────────────────────────────────────────────
+  if (motion === "spin" || has(/spin|whirl|cyclone|tornado|twister/)) return `
+const turn = t * 13;
+for (let ring = 0; ring < 3; ring++) {
+  const r = size * (.5 + ring * .26), a = turn - ring * .7;
+  api.slash(0, 0, r, a, 2.5, ring % 2 ? secondary : color, 9 - ring * 2, active ? .9 : .25);
+}
+for (let i = 0; i < 6; i++) { const a = turn * .7 + i * Math.PI / 3; api.line(Math.cos(a) * size * .3, Math.sin(a) * size * .3, Math.cos(a) * size * 1.05, Math.sin(a) * size * 1.05, secondary, 3, active ? .5 : .12); }
+api.asset("${asset}", 0, 0, size * 1.3, active ? .6 : .2, turn * .5);
+if (active) api.flash(0, 0, size * .55, secondary, .3);`;
+
+  // ── Rising multi-hit uppercut ─────────────────────────────────────────────
+  if (motion === "multi-uppercut" || has(/shoryu|rising|upper/)) return `
+const rise = p * size * 1.5;
+for (let i = 0; i < 5; i++) {
+  const y = -rise + i * size * .3, fade = 1 - i / 5;
+  api.slash(size * .1, y, size * (.44 + i * .07), -2.5 + tiltless, 1.9, i % 2 ? secondary : color, 8 * fade, (active ? .9 : .25) * fade);
+}
+api.line(-size * .1, size * .5, size * .25, -rise - size * .35, color, 7, active ? .8 : .2);
+api.line(size * .2, size * .45, size * .5, -rise - size * .2, secondary, 4, active ? .6 : .15);
+api.asset("${asset}", size * .2, -rise * .55, size * 1.1, active ? .55 : .22, -.7);
+if (active) api.flash(size * .25, -rise - size * .1, size * .6, secondary, .38);`.replace("tiltless", tilt.toFixed(3));
+
+  // ── Airborne rush ─────────────────────────────────────────────────────────
+  if (motion === "fly-in" || has(/fly|soar|swoop|comet/)) return `
+api.wedge(-size * .2, 0, size * 1.15, size * .42, color, active ? .34 : .1);
+api.streak(-size * .1, 0, size * 2.4, 6, secondary, size * .17, active ? .95 : .3);
+for (let i = 0; i < 3; i++) { const off = i * size * .5; api.ring(-off, 0, size * (.42 - i * .1), color, 4 - i, (active ? .55 : .15) * (1 - i * .3)); }
+api.asset("${asset}", size * .35, 0, size * 1.2, active ? .55 : .25, ${tilt.toFixed(3)});
+if (active) api.flash(size * .5, 0, size * .7, secondary, .4);`;
+
+  // ── Falling slam ──────────────────────────────────────────────────────────
+  if (motion === "ground-pound" || has(/pound|shaker|seismic|quake/)) return `
+if (active) {
+  const wave = (p - .35) / .65;
+  for (let i = 0; i < 3; i++) { const r = size * (.5 + wave * 2.6) - i * size * .34; if (r > 0) api.shock(0, size * .95, r, i % 2 ? secondary : color, 7 - i * 2, Math.max(0, .85 - wave * .7)); }
+  for (let i = 0; i < 7; i++) { const a = -Math.PI * .12 - i * Math.PI * .12, d = size * (.5 + wave * 1.1); api.line(Math.cos(a) * d * .4, size * .9, Math.cos(a) * d, size * .9 + Math.sin(a) * size * .8, secondary, 3, Math.max(0, .7 - wave * .6)); }
+  api.flash(0, size * .9, size * (.6 + wave * .9), secondary, Math.max(0, .55 - wave * .5));
+} else {
+  api.streak(0, -size * .3, size * 1.2, 3, color, size * .3, .35);
+  api.ring(0, 0, size * (.3 + p * .3), color, 5, .4);
+}
+api.asset("${asset}", 0, size * .7, size * 1.4, active ? .55 : .15, 0);`;
+
+  // ── Wall slam ─────────────────────────────────────────────────────────────
+  if (motion === "wall-slam" || has(/wall/)) return `
+api.wedge(0, 0, size * 1.25, size * .5, color, active ? .4 : .1);
+for (let i = 0; i < 7; i++) {
+  const a = (i - 3) * .34, len = size * (.85 + (i % 2) * .4);
+  api.line(size * .3, 0, size * .3 + Math.cos(a) * len, Math.sin(a) * len, i % 2 ? secondary : color, 4, active ? .8 : .18);
+}
+api.ring(size * .35, 0, size * (.35 + p * .5), secondary, 6, active ? .75 : .18);
+api.asset("${asset}", size * .55, 0, size * 1.4, active ? .55 : .22, 0);
+if (active) api.flash(size * .6, 0, size * .85, secondary, .5);`;
+
+  // ── Firearm ───────────────────────────────────────────────────────────────
+  if (type === "gun" || motion === "gun" || has(/gun|pistol|revolver|rifle|magnum|shotgun/)) return `
+if (active) {
+  api.line(size * .5, 0, size * 7, 0, secondary, 3, .9);
+  api.line(size * .5, 0, size * 5, 0, color, 6, .5);
+  for (let i = 0; i < 7; i++) { const a = (i - 3) * .42; api.line(size * .5, 0, size * .5 + Math.cos(a) * size * 1.5, Math.sin(a) * size * 1.5, i % 2 ? secondary : color, 3, .85); }
+  api.flash(size * .55, 0, size * 1.5, secondary, .85);
+} else {
+  api.ring(size * .35, 0, size * (.7 - p * .3), color, 2, .25);
+}
+api.asset("${asset}", size * .8, 0, size * 1.25, active ? .6 : .12, 0);`;
+
+  // ── Jab barrage ───────────────────────────────────────────────────────────
+  if (motion === "rapid-jab" || has(/rapid|ora|barrage|flurry|rush/)) return `
+const beat = Math.floor(t * 22);
+for (let i = 0; i < 7; i++) {
+  const lane = ((i * 7 + beat) % 5 - 2) * size * .19;
+  const reach = size * (.75 + ((i + beat) % 3) * .26);
+  api.line(-size * .25, lane, reach, lane * .55, i % 2 ? secondary : color, 5 - (i % 3), active ? .9 : .2);
+}
+api.wedge(-size * .2, 0, size * 1.1, size * .45, color, active ? .22 : .06);
+api.asset("${asset}", size * .55, 0, size * 1.25, active ? .55 : .2, (beat % 2 ? .18 : -.18));
+if (active) api.flash(size * (.8 + (beat % 3) * .12), ((beat % 5) - 2) * size * .14, size * .45, secondary, .55);`;
+
+  // ── Dive kick ─────────────────────────────────────────────────────────────
+  if (motion === "dive-kick" || has(/dive|stomp|meteor kick/)) return `
+const ang = .72;
+api.wedge(-size * .3, -size * .45, size * 1.3, size * .3, color, active ? .3 : .08);
+for (let i = 0; i < 4; i++) {
+  const off = i * size * .22;
+  api.line(-size * .5 - off, -size * .95 - off, size * .75 - off * .4, size * .75 - off * .4, i % 2 ? secondary : color, 6 - i, active ? .85 : .2);
+}
+api.slash(size * .35, size * .35, size * .6, -2.3, 1.6, secondary, 7, active ? .8 : .18);
+api.asset("${asset}", size * .4, size * .4, size * 1.2, active ? .55 : .22, ang);
+if (active) api.flash(size * .5, size * .5, size * .65, secondary, .45);`;
+
+  // ── Grapple ───────────────────────────────────────────────────────────────
+  if (type === "grapple" || motion === "grapple" || has(/grab|throw|clinch|suplex|slam/)) return `
+const reach = size * (.6 + p * .8);
+api.line(0, 0, reach, -size * .1, color, 7, active ? .9 : .3);
+api.ring(reach, -size * .1, size * (.26 + Math.sin(t * 14) * .04), secondary, 5, active ? .95 : .3);
+api.spark(reach, -size * .1, size * .5, secondary, 6, t * 3);
+api.asset("${asset}", reach, -size * .1, size * 1.3, active ? .6 : .2, 0);
+if (active) api.flash(reach, -size * .1, size * .5, secondary, .4);`;
+
+  // ── Projectiles and casts ─────────────────────────────────────────────────
+  if (type === "projectile" || type === "freeze" || type === "bomb" || type === "pillar" || type === "trap" || motion === "projectile") return `
+const charge = Math.min(1, p * 2.2), orb = size * (.3 + charge * .3);
+api.circle(size * .35, 0, orb, color, secondary, 3, active ? .95 : .35);
+api.ring(size * .35, 0, orb * (1.7 + Math.sin(t * 11) * .12), secondary, 3, active ? .7 : .22);
+for (let i = 0; i < 5; i++) { const a = t * 4 + i * Math.PI * .4, r = orb * (2.1 + Math.sin(t * 6 + i) * .3); api.line(size * .35 + Math.cos(a) * r, Math.sin(a) * r * .7, size * .35 + Math.cos(a) * r * .6, Math.sin(a) * r * .42, secondary, 3, active ? .75 : .2); }
+api.asset("${asset}", size * .35, 0, size * 1.2, active ? .55 : .3, t * .8);
+if (active) api.flash(size * .35, 0, orb * 1.6, secondary, .5);`;
+
+  // ── Default: a real sweeping slash ────────────────────────────────────────
+  return `
+const sweep = -2.0 + ${tilt.toFixed(3)} + p * 3.1;
+api.slash(0, 0, size * (.62 + p * .22), sweep, 1.5, color, 10, active ? .95 : .22);
+api.slash(0, 0, size * (.84 + p * .18), sweep + .3, 1.1, secondary, 5, active ? .8 : .18);
+api.streak(-size * .1, 0, size * 1.1, 3, secondary, size * .22, active ? .5 : .12);
+api.asset("${asset}", Math.cos(sweep + .75) * size * .6, Math.sin(sweep + .75) * size * .6, size * 1.1, active ? .55 : .24, sweep + .75);
+if (active) api.flash(Math.cos(sweep + .75) * size * .7, Math.sin(sweep + .75) * size * .7, size * .55, secondary, .45);`;
 }
 function sanitizeVisualScript(value, fallbackMove, type) {
   let script = String(value || "").trim().replace(/^```(?:javascript|js)?\s*/i, "").replace(/\s*```$/i, "");
@@ -304,11 +460,49 @@ function runVisualScript(state, x, y, size, active, progress) {
   const move = state.move || {}, v = state.visual || {}, baseX = x, baseY = y;
   const alpha = (value = 1) => Math.max(0, Math.min(1, Number(value) || 0));
   const api = {
-    line: (x1, y1, x2, y2, stroke = v.color, width = 4, opacity = 1) => { ctx.globalAlpha = alpha(opacity); ctx.strokeStyle = stroke; ctx.lineWidth = Math.max(1, Number(width) || 1); ctx.beginPath(); ctx.moveTo(baseX + x1, baseY + y1); ctx.lineTo(baseX + x2, baseY + y2); ctx.stroke(); },
-    arc: (cx, cy, radius, start, end, stroke = v.color, width = 4, opacity = 1) => { ctx.globalAlpha = alpha(opacity); ctx.strokeStyle = stroke; ctx.lineWidth = Math.max(1, Number(width) || 1); ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(0, radius), start, end); ctx.stroke(); },
-    ring: (cx, cy, radius, stroke = v.color, width = 4, opacity = 1) => { api.arc(cx, cy, radius, 0, Math.PI * 2, stroke, width, opacity); },
-    circle: (cx, cy, radius, fill = v.color, stroke = "", width = 0, opacity = 1) => { ctx.globalAlpha = alpha(opacity); ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(0, radius), 0, Math.PI * 2); ctx.fill(); if (stroke && width) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(); } },
-    spark: (cx, cy, radius, stroke = v.secondary, count = 6, rotation = 0) => { for (let i = 0; i < Math.max(2, Math.min(18, count)); i++) { const a = rotation + i * Math.PI * 2 / count; api.line(cx + Math.cos(a) * radius * .25, cy + Math.sin(a) * radius * .25, cx + Math.cos(a) * radius, cy + Math.sin(a) * radius, stroke, 2 + radius * .035, active ? .85 : .18); } },
+    line: (x1, y1, x2, y2, stroke = v.color, width = 4, opacity = 1) =>
+      glowStroke(() => { ctx.beginPath(); ctx.moveTo(baseX + x1, baseY + y1); ctx.lineTo(baseX + x2, baseY + y2); }, stroke, width, alpha(opacity)),
+    arc: (cx, cy, radius, start, end, stroke = v.color, width = 4, opacity = 1) =>
+      glowStroke(() => { ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(0, radius), start, end); }, stroke, width, alpha(opacity)),
+    ring: (cx, cy, radius, stroke = v.color, width = 4, opacity = 1) => api.arc(cx, cy, radius, 0, Math.PI * 2, stroke, width, opacity),
+    circle: (cx, cy, radius, fill = v.color, stroke = "", width = 0, opacity = 1) => {
+      glowFill(() => { ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(0, radius), 0, Math.PI * 2); }, fill, alpha(opacity), Math.max(8, radius * .9));
+      if (stroke && width) api.ring(cx, cy, radius, stroke, width, opacity);
+    },
+    spark: (cx, cy, radius, stroke = v.secondary, count = 6, rotation = 0) => {
+      const n = Math.max(2, Math.min(18, count));
+      for (let i = 0; i < n; i++) { const ang = rotation + i * Math.PI * 2 / n, inner = radius * .25, outer = radius * (.8 + (i % 3) * .18); api.line(cx + Math.cos(ang) * inner, cy + Math.sin(ang) * inner, cx + Math.cos(ang) * outer, cy + Math.sin(ang) * outer, stroke, 2 + radius * .035, active ? .9 : .2); }
+    },
+    // A tapering swipe: the shape a limb actually carves through the air.
+    slash: (cx, cy, radius, start, sweep, stroke = v.color, width = 8, opacity = 1) => {
+      const steps = 9;
+      for (let i = 0; i < steps; i++) {
+        const t0 = i / steps, t1 = (i + 1) / steps;
+        const taper = Math.sin(Math.PI * (t0 * .85 + .1));
+        api.arc(cx, cy, radius * (.92 + t0 * .16), start + sweep * t0, start + sweep * t1, stroke, width * taper, opacity * (.35 + taper * .65));
+      }
+    },
+    // Speed lines trailing behind motion.
+    streak: (cx, cy, length, count = 4, stroke = v.secondary, spread = 26, opacity = 1) => {
+      for (let i = 0; i < count; i++) {
+        const off = (i - (count - 1) / 2) * spread, taper = 1 - Math.abs(i - (count - 1) / 2) / Math.max(1, count);
+        api.line(cx, cy + off, cx - length * (.55 + taper * .6), cy + off * 1.25, stroke, 2 + taper * 3.5, opacity * (.3 + taper * .55));
+      }
+    },
+    // An expanding ground ring, drawn in perspective.
+    shock: (cx, cy, radius, stroke = v.color, width = 5, opacity = 1) =>
+      glowStroke(() => { ctx.beginPath(); ctx.ellipse(baseX + cx, baseY + cy, Math.max(0, radius), Math.max(0, radius * .3), 0, 0, Math.PI * 2); }, stroke, width, alpha(opacity)),
+    // A solid cone of force pointing forward.
+    wedge: (cx, cy, length, spread, fill = v.color, opacity = 1) =>
+      glowFill(() => { ctx.beginPath(); ctx.moveTo(baseX + cx, baseY + cy); ctx.lineTo(baseX + cx + length, baseY + cy - spread); ctx.lineTo(baseX + cx + length * 1.12, baseY + cy); ctx.lineTo(baseX + cx + length, baseY + cy + spread); ctx.closePath(); }, fill, alpha(opacity), 22),
+    // A hot flash that blooms and fades - use at the moment of contact.
+    flash: (cx, cy, radius, fill = v.secondary, opacity = 1) => {
+      ctx.save(); ctx.globalCompositeOperation = "lighter";
+      const gradient = ctx.createRadialGradient(baseX + cx, baseY + cy, 0, baseX + cx, baseY + cy, Math.max(1, radius));
+      gradient.addColorStop(0, mixHex(fill, "#ffffff", .85)); gradient.addColorStop(.4, fill); gradient.addColorStop(1, "transparent");
+      ctx.globalAlpha = alpha(opacity); ctx.fillStyle = gradient;
+      ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(1, radius), 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    },
     glow: (stroke = v.color, blur = size * .4) => { ctx.shadowColor = stroke; ctx.shadowBlur = Math.max(0, Math.min(80, Number(blur) || 0)); },
     asset: (id, ox = 0, oy = 0, drawSize = size * 2, opacity = 1, rotation = 0) => { if (VFX_IDS.has(id)) drawVfxAsset(id, state.t * (Number(v.vfxFps) || 18), baseX + ox, baseY + oy, Math.max(20, Math.min(280, Number(drawSize) || size)), alpha(opacity), rotation); }
   };
@@ -612,7 +806,7 @@ function makeCombatant(fighter,x,dir) {
   // separate, slightly noisy skill value so a strong blueprint can still make
   // believable reads, hesitations, and dropped links.
   const examplePenalty = fighter.example ? .08 : 0, skill = Math.min(.9, Math.max(.48, .6 + (aptitude - 2) * .05 - examplePenalty + (Math.random() - .5) * .07));
-  const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null,
+  const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null, grappleLock:0,
     meter:0, guard:RULES.guardMax, guardBroken:0, guardImmune:0, wallSlam:null, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
     combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.min(6, 2 + Math.ceil(aptitude / 2)) } };
   const archetype = fighterArchetype(c);
@@ -959,7 +1153,7 @@ function aiTryAttack(me, foe, variant, intent, chance = 1) {
 
 function updateAI(me, foe, dt) {
   me.cd = Math.max(0,me.cd-dt); me.hurt=Math.max(0,me.hurt-dt); me.hitstunFrames=me.hurt>0 ? Math.ceil(me.hurt*60) : 0; me.frozen=Math.max(0,me.frozen-dt); me.invuln=Math.max(0,me.invuln-dt); me.recoveryCooldown=Math.max(0,me.recoveryCooldown-dt); me.dodge=Math.max(0,me.dodge-dt); me.jumpCd=Math.max(0,me.jumpCd-dt); me.crouch=Math.max(0,me.crouch-dt); me.blockFlash=Math.max(0,me.blockFlash-dt); me.airComboTimer=Math.max(0,me.airComboTimer-dt);
-  me.counterFlash=Math.max(0,me.counterFlash-dt); me.superFlash=Math.max(0,me.superFlash-dt); me.techTimer=Math.max(0,me.techTimer-dt); me.backdash=Math.max(0,me.backdash-dt);
+  me.counterFlash=Math.max(0,me.counterFlash-dt); me.superFlash=Math.max(0,me.superFlash-dt); me.techTimer=Math.max(0,me.techTimer-dt); me.backdash=Math.max(0,me.backdash-dt); me.grappleLock=Math.max(0,(me.grappleLock||0)-dt);
   const distance = Math.abs(foe.x-me.x), profile = me.ai.profile, skill = me.ai?.skill || .62;
   if (me.ai) me.ai.hesitation = Math.max(0, me.ai.hesitation - dt);
   if (me.airComboTarget && (me.airComboTimer === 0 || foe.grounded || foe.juggle <= 0)) me.airComboTarget = null;
@@ -1088,6 +1282,12 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       const grabs = combatMoves(me).filter(isGrapple);
       const grab = grabs.length ? grabs[Math.floor(Math.random() * grabs.length)] : throwMove(me);
       const grabRange = moveHitRange(grab);
+      if (me.grappleLock > 0) {
+        // The last grab attempt is still cooling down - lean on a mix-up
+        // instead of walking in for a grab that cannot come out yet.
+        ai.intent = "pressure";
+        return;
+      }
       if (distance <= grabRange && me.cd === 0) {
         ai.blockedStreak = 0;
         startAttack(me, foe, grab);
@@ -1251,7 +1451,7 @@ function scoreMove(move, context) {
     score += distance < 170 ? (room > 260 ? 20 : 6) : -12;
   }
   if (isRapidJab(move)) score += variant !== "air" && distance < 220 ? 13 : -4;
-  if (isGrapple(move)) score += distance < 130 ? (foe.blocking ? 26 : 8) : -16;
+  if (isGrapple(move)) score += (me.grappleLock > 0) ? -40 : distance < 130 ? (foe.blocking ? 26 : 8) : -16;
 
   // Anti-air: catch them out of the sky.
   if (!foe.grounded) {
@@ -1263,7 +1463,7 @@ function scoreMove(move, context) {
 
   // Guard-breaking: the half of the body they are not defending.
   if (foe.blocking) {
-    if (isGrapple(move)) score += 24;
+    if (isGrapple(move)) score += me.grappleLock > 0 ? -40 : 24;
     else if (foe.blockLow && isOverhead(move, variant)) score += 18;
     else if (!foe.blockLow && isLowHit(move, variant)) score += 18;
     else score -= 10;
@@ -1516,7 +1716,7 @@ function applyMoveBehavior(me, foe, state) {
   if (behavior.motion === "teleport") { me.x = Math.max(RULES.wallLeft, Math.min(RULES.wallRight, foe.x + me.dir * clampNumber(behavior.offset, 40, 180, 92))); me.dir = foe.x >= me.x ? 1 : -1; me.vx = 0; me.trail.push({ t:.42, x:me.x, y:me.y }); }
 }
 function attemptGrapple(me, foe, state) {
-  if (foe.invuln > 0 || foe.down) return false;
+  if (foe.invuln > 0 || foe.down || (foe.grappleLock || 0) > 0) return false;
   // Throw tech: a defender who is attacking, or who reads the grab in time,
   // breaks the clinch instead of eating a full command grab.
   const canTech = foe.guardBroken <= 0 && foe.hurt <= 0 && foe.techTimer === 0
@@ -1526,14 +1726,17 @@ function attemptGrapple(me, foe, state) {
     me.attackState.resolved = true; state.grapplePhase = "whiff";
     foe.effects.push({ kind: "impact", t: .3, x: (me.x + foe.x) / 2, y: me.y, color: "#ffffff", size: 56 });
     resetCombo(me); addHitstop(.06); addShake(.1); showBanner("TECH", .5, "tech");
+    me.grappleLock = .5; foe.grappleLock = .35;
     return false;
   }
   if (foe.grappledBy || me.grappleTarget || !foe.grounded) {
     foe.hp = Math.max(0, foe.hp - Math.max(.5, state.damage * .12));
     foe.blockFlash = .2; resetCombo(me);
     state.grapplePhase = "whiff";
+    me.grappleLock = .4;
     return false;
   }
+  resetCombo(me);
   state.grabbed = true; state.grappled = true; state.grapplePhase = "hold";
   me.grappleTarget = foe; foe.grappledBy = me; foe.grappledState = state;
   foe.hurt = 0; foe.hitstunFrames = 0; foe.vx = 0; foe.vy = 0; foe.grounded = me.grounded;
@@ -1551,11 +1754,21 @@ function finishGrapple(me, foe, state) {
   state.finished = true;
   const finisher = state.behavior?.finisher === "throw" || state.animation?.finish === "throw" ? "throw" : "slam";
   releaseGrapple(me, foe);
+  // A throw is a clean reset, not a combo link: it never inherits an existing
+  // scale (so it always hits for its full number) and it never leaves a combo
+  // window open behind it, so it cannot chain into another throw.
+  resetCombo(me);
   hit(me, foe, state.damage + (finisher === "throw" ? 5 : 7), state.label, state.hitstun, false, "ground", state.visual);
+  resetCombo(me);
+  // A short shared cooldown on both fighters keeps a throw from being thrown
+  // right back out again the instant it recovers - the "locked in a loop" feel.
+  me.grappleLock = .45; foe.grappleLock = .45;
   foe.grounded = false; foe.runJump = false; foe.y = Math.max(390, foe.y - (finisher === "throw" ? 10 : 28));
   if (!foe.vy) foe.vy = -(finisher === "throw" ? 560 : 470);
   if (!foe.vx) foe.vx = me.dir * (finisher === "throw" ? 410 : 260);
-  foe.effects.push({ kind:"impact", t:.46, x:foe.x, y:foe.y, color:state.visual?.secondary || "#fff2c2", size:(state.visual?.size || 68) * 1.25, vfxId:state.visual?.hitVfx });
+  foe.pendingKnockdown = RULES.softKnockdown;
+  foe.effects.push({ kind:"throw-slam", t:.5, x:foe.x, y:foe.y, color:state.visual?.color || "#ff9f43", size:(state.visual?.size || 68) * 1.3, vfxId:state.visual?.hitVfx });
+  addShake(finisher === "throw" ? .24 : .3); addHitstop(.09);
 }
 function spawnProjectile(me,foe,state) {
   const behavior = state.behavior || {}, visual = state.visual || moveVisualDefaults[state.move.type] || moveVisualDefaults.projectile;
@@ -1965,12 +2178,27 @@ function drawCombatStateFx(f, blocking, running) {
 function drawGrappleLink(f) {
   const target = f.grappleTarget;
   if (!target || !f.attackState?.grappled) return;
-  const phase = f.attackState.grapplePhase, pulse = 1 + Math.sin((battle?.elapsed || 0) * 22) * .08;
-  ctx.save(); ctx.globalAlpha = phase === "hold" ? .95 : .7; ctx.lineCap="round";
-  ctx.strokeStyle = f.attackState.visual?.color || "#ff9f43"; ctx.lineWidth = 7 * pulse; ctx.setLineDash([12, 7]);
-  ctx.beginPath(); ctx.moveTo(f.x + f.dir * 36, f.y - 112); ctx.lineTo(target.x - f.dir * 29, target.y - 107); ctx.stroke();
-  ctx.setLineDash([]); ctx.strokeStyle = f.attackState.visual?.secondary || "#fff2c2"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(f.x + f.dir * 36, f.y - 112); ctx.lineTo(target.x - f.dir * 29, target.y - 107); ctx.stroke();
+  const phase = f.attackState.grapplePhase, time = battle?.elapsed || 0, pulse = 1 + Math.sin(time * 22) * .08;
+  const color = f.attackState.visual?.color || "#ff9f43", accent = f.attackState.visual?.secondary || "#fff2c2";
+  const x1 = f.x + f.dir * 36, y1 = f.y - 112, x2 = target.x - f.dir * 29, y2 = target.y - 107;
+  ctx.save();
+  // A held clinch crackles with energy along the tether; a strike or finish
+  // reads as a single hot line instead of a loose dashed rope.
+  if (phase === "hold") {
+    const segments = 5;
+    ctx.save(); ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < segments; i++) {
+      const t0 = i / segments, t1 = (i + 1) / segments;
+      const jitter = Math.sin(time * 26 + i * 2.1) * 5;
+      const ax = x1 + (x2 - x1) * t0, ay = y1 + (y2 - y1) * t0 + jitter;
+      const bx = x1 + (x2 - x1) * t1, by = y1 + (y2 - y1) * t1 - jitter;
+      glowStroke(() => { ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); }, i % 2 ? accent : color, 4 * pulse, .85);
+    }
+    ctx.restore();
+    glowFill(() => { ctx.beginPath(); ctx.arc(x2, y2, 15 * pulse, 0, Math.PI * 2); }, accent, .9, 20);
+  } else {
+    glowStroke(() => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }, color, 6, .55);
+  }
   ctx.restore();
 }
 function animationTransform(f, state) {
@@ -2073,35 +2301,36 @@ function drawAttackPersonality(state, x, y, size) {
   const time = battle?.elapsed || 0, activeStart = state.startup / 60, activeEnd = (state.startup + state.active) / 60;
   const active = state.t >= activeStart && state.t <= activeEnd, pulse = 1 + Math.sin(time * 24) * .08;
   const intensity = Math.max(.45, Math.min(1.6, Number(animation.intensity) || 1));
-  ctx.save(); ctx.translate(x, y); ctx.globalAlpha *= (active ? .68 : .2) * intensity; ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.strokeStyle = active ? (state.visual?.secondary || "#ffffff") : (state.visual?.color || "#ffffff");
-  ctx.lineWidth = Math.max(2.5, size / 20) * (active ? 1.25 : .8);
-  const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  const localAlpha = (active ? .68 : .2) * intensity;
+  const strokeColor = active ? (state.visual?.secondary || "#ffffff") : (state.visual?.color || "#ffffff");
+  const strokeWidth = Math.max(2.5, size / 20) * (active ? 1.25 : .8);
+  ctx.save(); ctx.translate(x, y); ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const line = (x1, y1, x2, y2) => glowStroke(() => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }, strokeColor, strokeWidth, localAlpha);
   if (/rapid|ora|barrage|flurry/.test(gesture) || state.rapidJab) {
     for (let i = 0; i < 5; i++) {
       const spread = (i - 2) * size * .14, reach = size * (.52 + (i % 2) * .18);
       line(-size * .3, spread, reach, spread - size * .08);
     }
-    ctx.beginPath(); ctx.arc(size * .28, 0, size * .54 * pulse, -1.2, 1.2); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(size * .28, 0, size * .54 * pulse, -1.2, 1.2); }, strokeColor, strokeWidth, localAlpha);
   } else if (/dive/.test(gesture) || state.diveKick) {
     line(-size * .24, -size * .3, size * .62, size * .46);
     line(size * .05, -size * .05, size * .82, size * .64);
-    ctx.beginPath(); ctx.arc(size * .5, size * .42, size * .42 * pulse, -2.4, .35); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(size * .5, size * .42, size * .42 * pulse, -2.4, .35); }, strokeColor, strokeWidth, localAlpha);
   } else if (/hook|elbow/.test(gesture)) {
-    ctx.beginPath(); ctx.arc(size * .08, 0, size * .74 * pulse, -1.72, .55); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(size * .08, 0, size * .74 * pulse, -1.72, .55); }, strokeColor, strokeWidth, localAlpha);
     line(size * .38, -size * .2, size * .7, size * .06);
   } else if (/knee|roundhouse|sweep/.test(gesture)) {
-    ctx.beginPath(); ctx.arc(size * .05, size * .1, size * .82 * pulse, -.65, .95); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(size * .05, size * .1, size * .82 * pulse, -.65, .95); }, strokeColor, strokeWidth, localAlpha);
     line(size * .12, size * .48, size * .68, size * .26);
   } else if (/overhead|slam/.test(gesture)) {
     line(-size * .06, -size * .7, size * .14, size * .42);
     line(size * .14, size * .42, -size * .02, size * .2);
     line(size * .14, size * .42, size * .3, size * .2);
   } else if (/spin|whirl/.test(gesture)) {
-    ctx.beginPath(); ctx.arc(0, 0, size * .64 * pulse, -2.55, 1.2); ctx.stroke();
-    ctx.beginPath(); ctx.arc(0, 0, size * .86, -.2, 2.1); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, size * .64 * pulse, -2.55, 1.2); }, strokeColor, strokeWidth, localAlpha);
+    glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, size * .86, -.2, 2.1); }, strokeColor, strokeWidth * .7, localAlpha * .8);
   } else if (/cast|burst|charge|rune/.test(gesture)) {
-    ctx.beginPath(); ctx.arc(size * .12, 0, size * .42 * pulse, 0, Math.PI * 2); ctx.stroke();
+    glowStroke(() => { ctx.beginPath(); ctx.arc(size * .12, 0, size * .42 * pulse, 0, Math.PI * 2); }, strokeColor, strokeWidth, localAlpha);
     for (let i = 0; i < 4; i++) { const a = time * 2.4 + i * Math.PI / 2; line(size * .46 + Math.cos(a) * 7, Math.sin(a) * 7, size * .72 + Math.cos(a) * 13, Math.sin(a) * 13); }
   } else {
     const reach = size * (.64 + (active ? .08 : 0));
@@ -2164,10 +2393,10 @@ function drawMoveVisual(f, state) {
     const height = size * (state.grapplePhase === "finish" ? 1.55 : 1.25); ctx.strokeStyle = v.color; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(x + 18, y + 24); ctx.lineTo(x + 18, y - height); ctx.stroke(); ctx.strokeStyle = v.secondary; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + 18, y + 20); ctx.lineTo(x + 18, y - height); ctx.stroke(); ctx.beginPath(); ctx.arc(x + 18, y + 22, size * .35, 0, Math.PI * 2); ctx.stroke();
   } else if (effect === "grapple") {
     const phase = state.grapplePhase || "reach", reach = phase === "hold" ? size * .8 : phase === "finish" ? size * .55 : size * 1.05;
-    ctx.strokeStyle = v.color; ctx.lineWidth = Math.max(4, size / 15); ctx.setLineDash(phase === "hold" ? [9, 5] : []);
-    ctx.beginPath(); ctx.moveTo(x - 4, y + 6); ctx.bezierCurveTo(x + size * .18, y - 28, x + reach * .62, y + 28, x + reach, y - 4); ctx.stroke(); ctx.setLineDash([]);
-    ctx.strokeStyle = v.secondary; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + reach, y - 4, phase === "hold" ? 15 : 10, 0, Math.PI * 2); ctx.stroke();
-    if (phase === "hold") { ctx.beginPath(); ctx.arc(x + reach, y - 4, 24 + Math.sin((battle?.elapsed || 0) * 18) * 3, 0, Math.PI * 2); ctx.stroke(); }
+    const armTrace = () => { ctx.beginPath(); ctx.moveTo(x - 4, y + 6); ctx.bezierCurveTo(x + size * .18, y - 28, x + reach * .62, y + 28, x + reach, y - 4); };
+    glowStroke(armTrace, v.color, Math.max(4, size / 15), active ? .9 : .3);
+    glowFill(() => { ctx.beginPath(); ctx.arc(x + reach, y - 4, phase === "hold" ? 15 : 10, 0, Math.PI * 2); }, v.secondary, active ? .95 : .3, 18);
+    if (phase === "hold") { const pulse = 24 + Math.sin((battle?.elapsed || 0) * 18) * 3; glowStroke(() => { ctx.beginPath(); ctx.arc(x + reach, y - 4, pulse, 0, Math.PI * 2); }, v.secondary, 3, .8); }
   } else {
     ctx.fillStyle = v.color; ctx.shadowColor = v.secondary; ctx.shadowBlur = size * .45; ctx.beginPath(); ctx.arc(x + 18, y, size * .34, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; ctx.strokeStyle = v.secondary; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + 18, y, size * .55, 0, Math.PI * 2); ctx.stroke();
   }
@@ -2206,7 +2435,33 @@ function drawProjectileVisual(p) {
   if(v.emoji && !p.exploding && !customSprite){ctx.font=`${Math.max(17,size*.8)}px serif`;ctx.fillStyle=v.secondary;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(v.emoji,0,0);}
   ctx.restore();
 }
-function drawImpactFx(f) { for (const effect of f.effects || []) { const progress = effect.t / .38; ctx.save(); ctx.translate(effect.x, effect.y - 82); ctx.globalAlpha = progress; if (effect.vfxId) drawVfxAsset(effect.vfxId, (1 - progress) * 30, 0, 0, Math.max(58, effect.size * 2.05), 1); ctx.strokeStyle = effect.color; ctx.lineWidth = 5; if (effect.kind === "grapple-lock") { ctx.setLineDash([8,5]); ctx.beginPath();ctx.arc(0,0,effect.size*(1.1-progress*.2),0,Math.PI*2);ctx.stroke();ctx.setLineDash([]); } else if (effect.kind === "freeze") { ctx.beginPath();ctx.arc(0,0,effect.size*(1.3-progress*.2),0,Math.PI*2);ctx.stroke(); } else if (effect.kind === "recovery") { ctx.globalAlpha = Math.min(1, progress * 1.8); ctx.setLineDash([8, 6]); ctx.strokeStyle = effect.color; ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.05 - progress * .25), 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); } else if (!effect.vfxId) { for (let i=0;i<8;i++) { const a=i*Math.PI/4; ctx.beginPath();ctx.moveTo(Math.cos(a)*12,Math.sin(a)*12);ctx.lineTo(Math.cos(a)*effect.size*(1.1-progress*.35),Math.sin(a)*effect.size*(1.1-progress*.35));ctx.stroke(); } ctx.beginPath();ctx.arc(0,0,effect.size*.34*(1.4-progress*.3),0,Math.PI*2);ctx.stroke(); } ctx.restore(); } }
+function drawImpactFx(f) {
+  for (const effect of f.effects || []) {
+    const progress = effect.t / .38;
+    ctx.save(); ctx.translate(effect.x, effect.y - 82); ctx.globalAlpha = progress;
+    if (effect.vfxId) drawVfxAsset(effect.vfxId, (1 - progress) * 30, 0, 0, Math.max(58, effect.size * 2.05), 1);
+    if (effect.kind === "grapple-lock") {
+      ctx.setLineDash([9, 6]); glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.1 - progress * .2), 0, Math.PI * 2); }, effect.color, 5, progress); ctx.setLineDash([]);
+    } else if (effect.kind === "freeze") {
+      glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.3 - progress * .2), 0, Math.PI * 2); }, effect.color, 5, progress);
+    } else if (effect.kind === "recovery") {
+      ctx.setLineDash([8, 6]); glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.05 - progress * .25), 0, Math.PI * 2); }, effect.color, 5, Math.min(1, progress * 1.8)); ctx.setLineDash([]);
+    } else if (effect.kind === "throw-slam") {
+      glowFill(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * .38 * (1.35 - progress * .4), 0, Math.PI * 2); }, effect.color, progress, effect.size * 1.1);
+      glowStroke(() => { ctx.beginPath(); ctx.ellipse(0, effect.size * .28, effect.size * (1.3 - progress * .3), effect.size * .32, 0, 0, Math.PI * 2); }, effect.color, 5, progress * .85);
+      for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; glowStroke(() => { ctx.moveTo(Math.cos(a) * 16, Math.sin(a) * 16); ctx.lineTo(Math.cos(a) * effect.size * (1.2 - progress * .4), Math.sin(a) * effect.size * (1.2 - progress * .4)); }, "#ffffff", 3, progress * .8); }
+    } else if (effect.kind === "counter") {
+      // A sharper, hotter burst than an ordinary hit - it should read as a punish.
+      glowFill(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * .3 * (1.3 - progress * .5), 0, Math.PI * 2); }, effect.color, progress, effect.size * .9);
+      for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5; glowStroke(() => { ctx.moveTo(Math.cos(a) * 10, Math.sin(a) * 10); ctx.lineTo(Math.cos(a) * effect.size * (1.3 - progress * .4), Math.sin(a) * effect.size * (1.3 - progress * .4)); }, "#ffe66d", 3, progress); }
+    } else if (!effect.vfxId) {
+      // A real hit spark: a hot core plus rays that shoot outward and fade.
+      glowFill(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * .3 * (1.4 - progress * .3), 0, Math.PI * 2); }, effect.color, progress, effect.size * .8);
+      for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; glowStroke(() => { ctx.moveTo(Math.cos(a) * 12, Math.sin(a) * 12); ctx.lineTo(Math.cos(a) * effect.size * (1.1 - progress * .35), Math.sin(a) * effect.size * (1.1 - progress * .35)); }, effect.color, 4, progress); }
+    }
+    ctx.restore();
+  }
+}
 function drawFreezeFx(f) { if (f.frozen <= 0) return; const pulse = 1 + Math.sin((battle?.elapsed || 0) * 12) * .05; ctx.save(); ctx.translate(f.x, f.y - 92); ctx.globalAlpha = .78; ctx.strokeStyle = "#bdf6ff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 62 * pulse, 0, Math.PI * 2); ctx.stroke(); for (let i=0;i<8;i++) { const a=i*Math.PI/4; const r=48 + (i%2)*15; ctx.beginPath(); ctx.moveTo(Math.cos(a)*20,Math.sin(a)*20); ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r); ctx.stroke(); } ctx.fillStyle="#eefcff"; ctx.font="25px serif"; ctx.textAlign="center"; ctx.fillText("❄",0,-70); ctx.restore(); }
 function drawFighter(f) { const c=f.fighter.config||{}, flip=f.dir, crouching=f.crouch>0 || f.attackState?.variant==="crouch", attacking=f.pose.includes("attack") || f.pose==="cast" || f.pose.includes("grapple"), blocking=f.blocking || f.blockFlash>0, running=f.pose==="run"; drawImpactFx(f); drawFreezeFx(f); drawGrappleLink(f); const at=animationTransform(f,f.attackState); ctx.save();ctx.translate(f.x + at.offsetX, f.y + at.offsetY);ctx.scale(flip,1);ctx.scale(1.28,1.28);ctx.rotate(at.rotation);ctx.transform(1,at.skewY,at.skewX,1,0,0);ctx.scale(at.scaleX,at.scaleY);ctx.scale(1,crouching ? .76 : 1); if(spriteSheet){ const crop=f.fighter.example ? {x:225,y:0,w:300,h:415} : {x:905,y:0,w:375,h:415}; ctx.imageSmoothingEnabled=true; ctx.globalAlpha=f.hurt > 0 ? .45 : f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1; ctx.drawImage(spriteSheet,crop.x,crop.y,crop.w,crop.h,-74,-190,148,190); ctx.globalAlpha=1; if(attacking){ctx.font="26px serif";ctx.fillText((c.emojis||["👊"])[f.attackState?.variant==="air"?2:0]||"👊",45,-95);} drawMoveVisual(f,f.attackState); drawCombatStateFx(f,blocking,running); ctx.restore(); return; } if(f.hurt>0){ctx.globalAlpha=.32;ctx.fillStyle="#fff";ctx.fillRect(-50,-155,100,145);ctx.globalAlpha=1;} for(const t of f.trail){ctx.globalAlpha=t.t*2;ctx.fillStyle=c.accent||"#ff5b52";ctx.beginPath();ctx.arc(t.x-f.x,t.y-f.y-75,18,0,7);ctx.fill();}ctx.globalAlpha=f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
   ctx.fillStyle="rgba(0,0,0,.3)";ctx.beginPath();ctx.ellipse(0,4,45,10,0,0,7);ctx.fill();ctx.fillStyle=c.color||"#f2c447";ctx.fillRect(-23,-105,46,73);ctx.fillStyle=c.accent||"#bd293a";ctx.fillRect(-29,-92,58,16);ctx.fillStyle="#f6c59c";ctx.beginPath();ctx.arc(0,-126,27,0,7);ctx.fill();ctx.fillStyle="#18212d";ctx.fillRect(-23,-144,46,12);ctx.fillStyle="#111";ctx.fillRect(7,-128,4,4);
@@ -2229,4 +2484,3 @@ async function loadSprites() {
   spriteThumbs.kung=cropToData(225,0,300,415); spriteThumbs.cyber=cropToData(905,0,375,415); renderRoster();
 }
 function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();
-
