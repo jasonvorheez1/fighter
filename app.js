@@ -399,7 +399,7 @@ const RULES = {
   floorY: 534, wallLeft: 115, wallRight: 1165, cornerZone: 105,
   meterMax: 100, superCost: 100, exCost: 35,
   meterOnDealt: .55, meterOnTaken: .95, meterOnBlocked: .38, meterOnWhiff: .8,
-  guardMax: 100, guardRegen: 17, guardCostBase: 5.5, guardCostScale: 1.5,
+  guardMax: 100, guardRegen: 23, guardCostBase: 2.2, guardCostScale: .85, guardImmuneAfterBreak: 1.6,
   guardBreakStun: 1.05, chipRatio: .12, blockPushback: 190, blockstunRatio: .74,
   comboScaleStep: .87, minScale: .3,
   juggleGravityStep: .17, maxJuggleGravity: 2.2,
@@ -481,7 +481,7 @@ function makeCombatant(fighter,x,dir) {
   // believable reads, hesitations, and dropped links.
   const examplePenalty = fighter.example ? .08 : 0, skill = Math.min(.9, Math.max(.48, .6 + (aptitude - 2) * .05 - examplePenalty + (Math.random() - .5) * .07));
   const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null,
-    meter:0, guard:RULES.guardMax, guardBroken:0, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
+    meter:0, guard:RULES.guardMax, guardBroken:0, guardImmune:0, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
     combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.min(6, 2 + Math.ceil(aptitude / 2)) } };
   const archetype = fighterArchetype(c);
   c.ai = { skill, archetype, profile:{ ...ARCHETYPES[archetype] }, lastMoveKey:"", hesitation:0,
@@ -531,7 +531,7 @@ function fightTick(dt) {
     battle.koTimer -= dt; battle.elapsed += slow; battle.shake = Math.max(0, battle.shake - slow * 1.6);
     updateAttack(a, b, slow); updateAttack(b, a, slow);
     updatePhysics(a, slow); updatePhysics(b, slow); resolvePushBoxes(a, b);
-    updateCamera(dt, 1.75); updateHud();
+    updateProjectiles(slow); updateCamera(dt, 1.75); updateHud();
     if (battle.koTimer <= 0) awardRound();
     return;
   }
@@ -544,14 +544,14 @@ function fightTick(dt) {
   updateGuard(a, dt); updateGuard(b, dt);
   updateCombo(a, dt); updateCombo(b, dt); updateAttack(a, b, dt); updateAttack(b, a, dt);
   updateAI(a,b,dt); updateAI(b,a,dt); updatePhysics(a,dt); updatePhysics(b,dt); resolvePushBoxes(a,b);
-  updateCamera(dt, 1);
+  updateProjectiles(dt); updateCamera(dt, 1);
   if (a.hp <= 0 || b.hp <= 0) finishRound(a.hp <= 0 && b.hp <= 0 ? null : a.hp <= 0 ? 1 : 0, "K.O.");
   else if (battle.clock <= 0) finishRound(a.hp === b.hp ? null : a.hp > b.hp ? 0 : 1, "TIME OVER");
   updateHud();
 }
 function updateGuard(f, dt) {
-  if (f.guardBroken > 0) { f.guardBroken = Math.max(0, f.guardBroken - dt); if (f.guardBroken === 0) f.guard = RULES.guardMax * .55; return; }
-  f.guardFlash = Math.max(0, f.guardFlash - dt);
+  if (f.guardBroken > 0) { f.guardBroken = Math.max(0, f.guardBroken - dt); if (f.guardBroken === 0) { f.guard = RULES.guardMax; f.guardImmune = RULES.guardImmuneAfterBreak; } return; }
+  f.guardFlash = Math.max(0, f.guardFlash - dt); f.guardImmune = Math.max(0, (f.guardImmune || 0) - dt);
   if (!f.blocking && f.hurt <= 0) f.guard = Math.min(RULES.guardMax, f.guard + RULES.guardRegen * dt);
 }
 function updateCamera(dt, zoomBias = 1) {
@@ -778,6 +778,7 @@ function aiThink(me, foe) {
   else if (foeIsWhiffing(me, foe) && distance < 330) intent = "whiff-punish";
   else if (!foe.grounded && foe.vy > -180 && distance < 260 && Math.random() < .45 + ai.skill * .45) intent = "antiair";
   else if (projectile) intent = distance > 290 && Math.random() < .35 + profile.jumpBias * .25 ? "leap" : "block";
+  else if (inCorner(me) && !inCorner(foe) && distance < 300 && Math.random() < .55 + ai.skill * .3) intent = "escape";
   else if (foe.hurt > 0 && distance < 300) intent = "pressure";
   else if (foe.attackState && distance < (foe.attackState.hitRange || 180) + 60) {
     // Respect grows when we keep eating the same attack and shrinks when we
@@ -934,6 +935,13 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       // pressure that does not burn guard meter.
       if (me.backdash === 0) { me.backdash = .5; me.dodge = .34; me.vx = -me.dir * (330 + skill * 90); me.pose = "evade"; }
       else me.vx *= .9;
+      return;
+    }
+    case "escape": {
+      // Out of the corner: jump over the pressure, or barge through it.
+      if (me.jumpCd === 0) { startJump(me, true); me.vx = me.dir * 380; return; }
+      if (me.cd === 0 && distance < 150 && aiTryAttack(me, foe, "ground", "launcher", .8)) return;
+      me.vx = me.dir * 300; me.running = true; me.pose = "run";
       return;
     }
     case "leap": {
@@ -1289,7 +1297,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
       resetCombo(me);
       if (me.ai) me.ai.blockedStreak++;
       if (foe.ai) foe.ai.respect = Math.max(.15, foe.ai.respect - .06);
-      if (foe.guard <= 0) {
+      if (foe.guard <= 0 && !(foe.guardImmune > 0)) {
         // Guard crush: a long, fully punishable stun. The pay-off for grinding
         // somebody's defense down instead of just swinging.
         foe.guardBroken = RULES.guardBreakStun; foe.blocking = false; foe.blockTimer = 0;
@@ -1406,6 +1414,8 @@ function updatePhysics(me, dt) {
   }
   if (me.frozen > 0) { me.vx = 0; me.vy = 0; me.pose = "frozen"; me.trail = me.trail.filter(t => (t.t -= dt) > 0); me.effects = me.effects.filter(effect => (effect.t -= dt) > 0); return; }
   me.x += me.vx * dt;
+  if (me.x <= RULES.wallLeft && me.vx < 0) me.vx *= .4;
+  if (me.x >= RULES.wallRight && me.vx > 0) me.vx *= .4;
   me.x = Math.max(RULES.wallLeft, Math.min(RULES.wallRight, me.x));
   me.vx *= me.blocking ? .55 : me.down ? .84 : .82;
   if (!me.grounded) {
@@ -1591,7 +1601,6 @@ function draw() {
   ctx.translate(-camera.x, -camera.y + (h / 2 - 330));
   drawArenaBackdrop(w, h, time);
   if (battle) {
-    if (battle.phase !== "between" && battle.phase !== "done") updateProjectiles(battle.phase === "ko" ? 1 / 60 * RULES.koSlowmo : battle.hitstop > 0 ? 0 : 1 / 60);
     for (const f of battle.fighters) drawFighter(f);
     for (const p of battle.projectiles || []) drawProjectileVisual(p);
   }
@@ -1892,4 +1901,5 @@ async function loadSprites() {
 function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();
 
 // dev inspection hook
+window.__sim = (seconds, dt = 1 / 60) => { for (let i = 0; i < Math.round(seconds / dt); i++) fightTick(dt); };
 window.__forge = () => battle && ({ phase: battle.phase, clock: battle.clock, hitstop: battle.hitstop, banner: battle.bannerTimer, f: battle.fighters.map(f => ({ hp: +f.hp.toFixed(1), pose: f.pose, cd: +f.cd.toFixed(2), hurt: +f.hurt.toFixed(2), down: f.down && +f.down.t.toFixed(2), gb: +f.guardBroken.toFixed(2), guard: +f.guard.toFixed(0), meter: +f.meter.toFixed(0), blocking: f.blocking, bt: +f.blockTimer.toFixed(2), atk: f.attackState?.label, x: +f.x.toFixed(0), invuln: +f.invuln.toFixed(2), intent: f.ai.intent, arche: f.ai.archetype })) });
