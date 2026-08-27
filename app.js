@@ -1114,9 +1114,9 @@ function airComboApproach(me, foe, move) {
   const desiredX = foe.x - chaseDir * idealGap, error = desiredX - me.x;
   me.vx = Math.max(-520, Math.min(520, error * 9.5));
   if (Math.abs(error) < 22) me.vx *= .45;
-  // Keep the attacker on the same vertical slice as the launched target;
-  // horizontal chase alone was making the next air button pass underneath.
-  const verticalError = foe.y - me.y;
+  // Aim slightly above the foe — juggle targets fall fast, so tracking their
+  // exact Y means attacks pass below them before the hitbox resolves.
+  const verticalError = (foe.y - 28) - me.y;
   if (Math.abs(verticalError) > 14) me.vy = Math.max(-860, Math.min(660, me.vy + verticalError * 5.6));
   me.running = false;
   return { distance:Math.abs(foe.x - me.x), vertical:Math.abs(foe.y - me.y), error };
@@ -1129,7 +1129,11 @@ function updatePlannedCombo(me, foe, dt) {
   me.dir = foe.x >= me.x ? 1 : -1;
   const distance = Math.abs(foe.x - me.x);
   const incomingRange = foe.attackState?.hitRange || 0;
-  const comboLive = me.combo.count > 0 && me.combo.target === foe && foe.hurt > 0;
+  // During an active air juggle the foe cannot attack back, and there is
+  // always a brief inter-hit gap where foe.hurt drops to zero before the next
+  // button connects. Treating that gap as an opening would cancel mid-string.
+  const inAirJuggle = !me.grounded && !foe.grounded && foe.juggle > 0;
+  const comboLive = me.combo.count > 0 && me.combo.target === foe && (foe.hurt > 0 || inAirJuggle);
   if (!comboLive && foe.attackState && me.cd === 0 && distance < incomingRange + 34 && Math.random() < dt * (.55 + (me.ai?.skill || .62) * .65)) {
     cancelComboPlan(me); if (me.ai) me.ai.hesitation = .1 + Math.random() * .12; return false;
   }
@@ -1153,13 +1157,26 @@ function updatePlannedCombo(me, foe, dt) {
   // available immediately rather than after the usual chain cooldown.
   if (step.cancel && me.cd > 0 && me.combo.count > 0) me.cd = 0;
   if (step.air && me.grounded) { me.jumpCd=0; startJump(me, true, foe); return true; }
-  if (!step.air && !me.grounded) return true;
+  if (!step.air && !me.grounded) {
+    // Waiting to land before executing the next ground step. Keep drifting
+    // toward the foe so we don't land too far to continue the route.
+    me.vx = Math.max(-260, Math.min(260, (foe.x - me.x) * 3.2));
+    me.pose = me.runJump ? "run-jump" : "jump";
+    return true;
+  }
   const reach = moveReach(step.move, step.air ? "air" : me.crouch > 0 ? "crouch" : "ground");
-  if (me.cd > 0) { me.vx = 0; me.pose = me.grounded ? "idle" : "jump"; return true; }
+  if (me.cd > 0) {
+    // For air steps keep tracking the foe during cooldown so the next button
+    // fires from the right position rather than from wherever we drifted.
+    if (step.air && !me.grounded) airComboApproach(me, foe, step.move);
+    else me.vx = 0;
+    me.pose = me.grounded ? "idle" : "jump";
+    return true;
+  }
   if (step.crouch) me.crouch = .24; else if (me.grounded) me.crouch = 0;
   const airSpacing = step.air ? airComboApproach(me, foe, step.move) : null;
   const inRange = (airSpacing?.distance ?? distance) <= moveHitRange(step.move, step.air ? "air" : me.crouch > 0 ? "crouch" : "ground"), verticalDistance = airSpacing?.vertical ?? Math.abs(foe.y - me.y);
-  if (inRange && (!step.air || verticalDistance < 190)) { startAttack(me, foe, step.move, me.comboStep); return true; }
+  if (inRange && (!step.air || verticalDistance < 240)) { startAttack(me, foe, step.move, me.comboStep); return true; }
   if (!step.air) me.vx = me.dir * 285;
   me.running = !step.air; me.pose = step.air ? (me.runJump ? "run-jump" : "jump") : "run";
   return true;
@@ -1286,7 +1303,10 @@ function updateAI(me, foe, dt) {
   }
   if (me.hurt > 0) {
     cancelComboPlan(me); if (!me.wallSlam) me.vx *= .88; me.pose = me.wallSlam ? "wall-carry" : "hurt";
-    const lateHitstun = me.hurt <= .16;
+    // Recovery attempt only in the final frames of hitstun (0.08s left).
+    // Raising this window lets recovery trigger earlier, making it feel free —
+    // keep it tight so landing a hit actually guarantees a follow-up.
+    const lateHitstun = me.hurt <= .08;
     if (lateHitstun && !me.recoveryAttempted) { me.recoveryAttempted = true; if (startRecovery(me, foe)) return; }
     return;
   }
@@ -1710,22 +1730,39 @@ function startBlock(me, duration = .5, low = false) {
 function startRecovery(me, foe) {
   if (me.recovery || me.recoveryCooldown > 0 || me.hurt <= 0 || me.grappledBy || me.down || me.guardBroken > 0 || me.wallSlam) return false;
   const airborne = !me.grounded;
-  // A launched fighter cannot air-recover before the juggle has actually
-  // started. Teching out during the launcher's own hitstun was cancelling
-  // the air combo before the attacker could land a single hit.
+  // Cannot tech out of the launcher itself — need to take at least one juggle
+  // hit before air-recovery becomes available.
   if (airborne && (me.airComboHits || 0) < 1 && (me.juggle || 0) > 0) return false;
-  const recoveryChance = airborne ? .34 : .4;
-  if (Math.random() > recoveryChance) return false;
-  me.recoveryAttempted = true; me.recovery = { type: airborne ? "air-hop" : "backflip", t: 0, duration: airborne ? .34 : .48 };
-  me.invuln = airborne ? .14 : .16; me.recoveryCooldown = airborne ? .7 : .82; me.hurt = 0; me.hitstunFrames = 0; me.attackState = null; me.attack = 0; me.blocking = false; me.blockTimer = 0; me.crouch = 0; me.running = false;
+  // Base chance: 20% air / 26% ground. Scale down sharply as the combo deepens
+  // so an attacker who lands 5+ hits doesn't face the same escape odds as one
+  // who just started. Each hit halves the remaining chance past hit 2.
+  const juggleDepth = me.airComboHits || 0;
+  const depthPenalty = juggleDepth > 2 ? Math.pow(.62, juggleDepth - 2) : 1;
+  const baseChance = airborne ? .20 : .26;
+  if (Math.random() > baseChance * depthPenalty) return false;
+  me.recoveryAttempted = true;
+  me.recovery = { type: airborne ? "air-hop" : "backflip", t: 0, duration: airborne ? .28 : .42 };
+  // Reduced invuln: tech gives a small window to reorient, not immunity.
+  me.invuln = airborne ? .08 : .10;
+  me.recoveryCooldown = airborne ? .8 : .95;
+  me.hurt = 0; me.hitstunFrames = 0; me.attackState = null; me.attack = 0; me.blocking = false; me.blockTimer = 0; me.crouch = 0; me.running = false;
   me.juggle = 0; me.airComboHits = 0; me.airComboTarget = null; me.airComboTimer = 0; me.airComboJumpQueued = false; me.pendingKnockdown = 0; me.juggleGravity = 1; resetCombo(me);
-  me.dir = foe.x >= me.x ? 1 : -1; me.vx = -me.dir * (airborne ? 145 : 245);
-  if (airborne) { me.vy = -300; me.y -= 4; me.pose = "recover-air"; }
-  else { me.grounded = false; me.vy = -475; me.y = Math.max(420, me.y - 2); me.pose = "recover-ground"; }
+  // Smaller escape velocity so the attacker can realistically give chase.
+  me.dir = foe.x >= me.x ? 1 : -1; me.vx = -me.dir * (airborne ? 95 : 180);
+  if (airborne) { me.vy = -220; me.y -= 4; me.pose = "recover-air"; }
+  else { me.grounded = false; me.vy = -380; me.y = Math.max(420, me.y - 2); me.pose = "recover-ground"; }
+  // The attacker's COMBO counter resets (victim escaped) but their positional
+  // plan is kept — they were in range and can immediately re-pressure or
+  // tech-chase. Wiping the full comboPlan rewarded the escape too much.
   const attacker = battle.fighters.find(fighter => fighter !== me);
-  if (attacker) { attacker.airComboTarget = null; attacker.airComboTimer = 0; attacker.airComboJumpQueued = false; resetCombo(attacker); attacker.comboPlan = null; attacker.comboStep = 0; }
+  if (attacker) {
+    attacker.airComboTarget = null; attacker.airComboTimer = 0; attacker.airComboJumpQueued = false;
+    resetCombo(attacker);
+    // Cancel plan but don't penalise with hesitation — attacker should chase.
+    attacker.comboPlan = null; attacker.comboStep = 0;
+  }
   playSfx("recover", { pan: panFromX(me.x), volume: .7 });
-  me.effects.push({ kind: "recovery", t: me.recovery.duration, x: me.x, y: me.y, color: me.fighter.config?.color || "#d8ff3e", size: airborne ? 44 : 58 });
+  me.effects.push({ kind: "recovery", t: me.recovery.duration, x: me.x, y: me.y, color: me.fighter.config?.color || "#d8ff3e", size: airborne ? 38 : 50 });
   return true;
 }
 // Pick the swing/cast sound that matches what this move physically is, so a
@@ -2117,7 +2154,12 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   const appliedHitstun = Math.round(hitstun * (counter ? RULES.counterHitstun : 1));
   foe.hp = Math.max(0, foe.hp - finalDamage);
   foe.damageTaken = (foe.damageTaken || 0) + finalDamage;
-  foe.hitstunFrames = appliedHitstun; foe.hurt = appliedHitstun / 60; foe.recoveryAttempted = false;
+  foe.hitstunFrames = appliedHitstun; foe.hurt = appliedHitstun / 60;
+  // Only grant a fresh recovery window on the FIRST hit of a sequence. Once a
+  // recovery attempt has been made or denied, the attacker has earned the
+  // rest of the combo — resetting this flag on every hit lets a 12-hit string
+  // offer 12 independent ~34% escape rolls (≈99% cumulative success rate).
+  if (me.combo.count <= 1) foe.recoveryAttempted = false;
   foe.blocking = false; foe.blockLow = false; foe.guardStreak = 0; foe.lastAttacker = me; foe.followUpWindow = null;
   gainMeter(me, finalDamage * RULES.meterOnDealt);
   gainMeter(foe, finalDamage * RULES.meterOnTaken);
