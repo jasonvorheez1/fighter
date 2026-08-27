@@ -1,6 +1,6 @@
 import { getVfx, framePath, VFX_DEFAULTS, VFX_IDS } from "./vfx-data.js";
 import { parseAiJson, sanitizeFighter, buildFighterModule, extractEmojis } from "./fighter-code.js";
-import { playSfx, panFromX, toggleSfxMuted, isSfxMuted, primeSfx } from "./sfx.js";
+import { playSfx, playUploadedSfx, panFromX, toggleSfxMuted, isSfxMuted, primeSfx } from "./sfx.js";
 import { WEAPON_BASE, WEAPON_IDS, WEAPON_BY_ID, WEAPON_MOTIONS, WEAPON_DEFAULT_MOTION } from "./weapon-data.js";
 
 const $ = (s) => document.querySelector(s);
@@ -8,13 +8,16 @@ const arena = $("#arena"), ctx = arena.getContext("2d");
 
 const kungFuMan = {
   id: "kung-fu-man", name: "Kung Fu Man", author: "Elecbyte", prompt: "The simple baseline fighter.",
-  config: { style: "classic balanced martial artist", emojis: ["👊", "🦵", "💢"], buttons: 3, combo: 1, specials: [{ name: "Palm Strike", type: "melee", variant: "light", visual: { effect: "arc", mainVfx: "main_slash_color1", hitVfx: "hit_round_spark", vfxFps: 18, color: "#f2c447", secondary: "#ffffff", size: 55, emoji: "✦" }, behavior: { motion: "none", radius: 0 } }], color: "#f2c447", accent: "#bd293a", banter: ["You have entered the dojo.", "A simple fist is enough."] },
-  script: `// Kung Fu Man — baseline fighter\nexport const fighter = {\n  name: "Kung Fu Man", buttons: 3, comboAptitude: 1,\n  specials: [{ name: "Palm Strike", type: "melee", visual: { effect: "arc", color: "#f2c447", secondary: "#ffffff", size: 55, emoji: "✦" }, behavior: { motion: "none" } }]\n};`, portrait_url: null, example: true
+  config: { style: "classic balanced martial artist", emojis: ["👊", "🦵", "💢"], buttons: 6, combo: 1, specials: [{ name: "Palm Strike", type: "melee", variant: "light", visual: { effect: "arc", mainVfx: "main_slash_color1", hitVfx: "hit_round_spark", vfxFps: 18, color: "#f2c447", secondary: "#ffffff", size: 55, emoji: "✦" }, behavior: { motion: "none", radius: 0 } }], color: "#f2c447", accent: "#bd293a", banter: [] },
+  script: `// Kung Fu Man — baseline fighter\nexport const fighter = {\n  name: "Kung Fu Man", buttons: 6, comboAptitude: 1,\n  specials: [{ name: "Palm Strike", type: "melee", visual: { effect: "arc", color: "#f2c447", secondary: "#ffffff", size: 55, emoji: "✦" }, behavior: { motion: "none" } }]\n};`, portrait_url: null, example: true
 };
 
 let fighters = [kungFuMan], selected = [kungFuMan.id, kungFuMan.id], activeSlot = 0;
 let cursor = 0, rosterColumns = 1;
 let spriteSheet = null, spriteThumbs = {};
+// Portraits are fighter art, not just select-screen thumbnails. Keep a small
+// image cache so a saved portrait can be drawn by the canvas during a match.
+const portraitSprites = new Map();
 // Where each fighter lives on the source sheet, and which way that art faces:
 // 1 for art already drawn facing right, -1 for art drawn facing left.
 const SPRITE_CROPS = { kung:{ x:225, y:0, w:300, h:415, facing:1 }, cyber:{ x:905, y:0, w:375, h:415, facing:-1 } };
@@ -22,8 +25,45 @@ let battle = null, lastFrame = 0, comboReadoutTimer = 0, moveCalloutTimer = 0;
 const FIGHT_START_LEFT = 480, FIGHT_START_RIGHT = 800;
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c])); }
 function fighterById(id) { return fighters.find(f => f.id === id) || kungFuMan; }
-function parseConfig(value) { try { return typeof value === "string" ? JSON.parse(value) : value; } catch { return {}; } }
-function normalizeFighter(row) { return { ...row, config: parseConfig(row.config) }; }
+function parseConfig(value) { try { const config = typeof value === "string" ? JSON.parse(value) : value; return config && typeof config === "object" && !Array.isArray(config) ? config : null; } catch { return null; } }
+function recoverTruncatedMoves(value) {
+  // Older generated kits were truncated by the save route, leaving invalid
+  // JSON. Their leading move names and types are still intact, which is enough
+  // for the normalizer to restore playable default data instead of falling all
+  // the way back to the unrelated Quick Strike placeholder.
+  const source = String(value || ""), seen = new Set(), moves = [];
+  const pattern = /"name"\s*:\s*("(?:\\.|[^"\\])*")\s*,\s*"type"\s*:\s*("(?:\\.|[^"\\])*")/g;
+  for (const match of source.matchAll(pattern)) {
+    try {
+      const name = JSON.parse(match[1]), type = JSON.parse(match[2]);
+      if (!name || seen.has(name) || !["melee", "projectile", "combo", "trap", "grapple", "freeze", "teleport", "pillar", "bomb", "gun"].includes(type)) continue;
+      seen.add(name); moves.push({ name, type });
+      if (moves.length === 10) break;
+    } catch { /* keep looking for the next intact move header */ }
+  }
+  return moves;
+}
+function normalizeFighter(row) {
+  const config = parseConfig(row.config);
+  if (config) { config.buttons = 6; return { ...row, config }; }
+  const specials = recoverTruncatedMoves(row.config);
+  return { ...row, config:{ name:row.name, author:row.author, buttons:6, specials } };
+}
+function portraitSprite(fighter) {
+  const url = String(fighter?.portrait_url || "").trim();
+  if (!url) return null;
+  let entry = portraitSprites.get(url);
+  if (!entry) {
+    const image = new Image();
+    entry = { image, ready:false, failed:false };
+    image.onload = () => { entry.ready = image.naturalWidth > 0; renderRoster(); };
+    image.onerror = () => { entry.failed = true; };
+    image.src = url;
+    portraitSprites.set(url, entry);
+  }
+  return entry.ready ? entry.image : null;
+}
+function warmPortraitSprites(list) { list.forEach(portraitSprite); }
 function avatar(f) {
   const em = f.config?.emojis?.[0] || "🥊";
   // Every forged fighter fights with the same in-battle sprite crop, so that
@@ -39,6 +79,7 @@ async function loadRoster() {
     const data = await res.json();
     fighters = [kungFuMan, ...(data.fighters || []).map(normalizeFighter)];
   } catch { fighters = [kungFuMan]; }
+  warmPortraitSprites(fighters);
   renderRoster();
 }
 
@@ -79,7 +120,9 @@ function renderDossier(fighter) {
   const { moves, stats, archetype } = fighterProfile(fighter);
   const copy = ARCHETYPE_COPY[archetype] || ARCHETYPE_COPY.balanced;
   const config = fighter.config || {};
-  const moveRows = moves.slice(0, 6).map(move => {
+  // The universal six buttons occupy the first six slots, so limiting this
+  // preview to six would hide every signature special from the dossier.
+  const moveRows = moves.map(move => {
     const frames = moveFrames(move);
     const multi = multiHitProfile(move);
     const tags = [
@@ -90,7 +133,7 @@ function renderDossier(fighter) {
       isDiveKick(move) ? "DIVE" : "", multi ? `${multi.hits} HITS` : ""
     ].filter(Boolean);
     return `<li><span class="move-name">${escapeHtml(move.name || "Strike")}</span>
-      <span class="move-tags">${escapeHtml(move.type || "melee").toUpperCase()}${tags.length ? ` · ${tags.join(" · ")}` : ""}</span>
+      <span class="move-tags">${escapeHtml(moveCategory(move).toUpperCase())} · ${escapeHtml(move.type || "melee").toUpperCase()}${tags.length ? ` · ${tags.join(" · ")}` : ""}</span>
       <span class="move-frames">${frames.startup}<i>startup</i>${frames.hitstun}<i>stun</i>${Math.round(moveReach(move))}<i>reach</i></span></li>`;
   }).join("");
   host.innerHTML = `
@@ -162,7 +205,7 @@ function renderRoster() {
     return `<article class="fighter-card ${p1 || cpu ? "selected" : ""} ${index === cursor ? "focused" : ""}" data-index="${index}">
       <button class="fighter-pick" data-fighter="${escapeHtml(f.id)}" role="option" aria-selected="${index === cursor}">
         <span class="portrait">${avatar(f)}<i class="card-archetype">${(ARCHETYPE_COPY[archetype] || ARCHETYPE_COPY.balanced).label}</i></span>
-        <span class="fighter-info"><strong>${escapeHtml(f.name)}</strong><span>BY ${escapeHtml(f.author)} · ${f.config?.buttons || 3} BTN</span></span>
+        <span class="fighter-info"><strong>${escapeHtml(f.name)}</strong><span>BY ${escapeHtml(f.author)} · ${f.config?.buttons || 6} BTN</span></span>
         <em>${label}</em>
       </button>${editAction}</article>`;
   }).join("");
@@ -362,6 +405,13 @@ api.line(size * .2, size * .45, size * .5, -rise - size * .2, secondary, 4, acti
 api.asset("${asset}", size * .2, -rise * .55, size * 1.1, active ? .55 : .22, -.7);
 if (active) api.flash(size * .25, -rise - size * .1, size * .6, secondary, .38);`.replace("tiltless", tilt.toFixed(3));
 
+  // ── Crouching slide ───────────────────────────────────────────────────────
+  if (motion === "slide" || has(/\bslide\b|skid|low.?dash/)) return `
+const rush = p > .12;
+for (let i = 0; i < 5; i++) { const sx = -size * (1.0 + i * .55), sy = size * (.25 + i * .05), fade = (1 - i / 5) * (active ? .9 : .25); api.line(sx, sy, sx - size * .22, sy - size * .18, color, 5 * fade, fade); api.line(sx - size * .08, sy + size * .08, sx - size * .28, sy - size * .10, secondary, 3 * fade, fade * .7); }
+if (rush) { api.wedge(-size * .18, size * .22, size * 1.05, size * .22, color, active ? .32 : .08); api.streak(-size * .12, size * .18, size * 2.1, 4, secondary, size * .14, active ? .88 : .28); }
+if (active) { api.flash(size * .2, size * .2, size * .55, secondary, .42); api.spark(0, size * .22, size * .7, color, .7, 0); }`;
+
   // ── Airborne rush ─────────────────────────────────────────────────────────
   if (motion === "fly-in" || has(/fly|soar|swoop|comet/)) return `
 api.wedge(-size * .2, 0, size * 1.15, size * .42, color, active ? .34 : .1);
@@ -552,12 +602,13 @@ function normalizeMove(move, fighterConfig = {}, depth = 0) {
   visual.secondary = /^#[0-9a-f]{6}$/i.test(visual.secondary) ? visual.secondary : (fighterConfig.color || moveVisualDefaults[type].secondary);
   visual.size = clampNumber(visual.size, 12, 130, moveVisualDefaults[type].size);
   visual.spriteUrl = /^https?:\/\/[^\s"'<>]+$/i.test(String(visual.spriteUrl || "")) ? String(visual.spriteUrl).slice(0, 600) : "";
+  visual.soundUrl = /^https?:\/\/[^\s"'<>]+$/i.test(String(visual.soundUrl || "")) ? String(visual.soundUrl).slice(0, 600) : "";
   const vfxDefault = VFX_DEFAULTS[type] || VFX_DEFAULTS.melee;
   visual.mainVfx = VFX_IDS.has(visual.mainVfx) ? visual.mainVfx : vfxDefault.mainVfx;
   visual.hitVfx = VFX_IDS.has(visual.hitVfx) ? visual.hitVfx : vfxDefault.hitVfx;
   visual.vfxFps = clampNumber(visual.vfxFps, 6, 30, 18);
   visual.script = sanitizeVisualScript(visual.script, raw, type);
-  const allowedMotion = ["none", "projectile", "trap", "dash", "dash-attack", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar", "gun", "wall-slam", "spin", "multi-uppercut", "fly-in", "ground-pound"];
+  const allowedMotion = ["none", "projectile", "trap", "dash", "dash-attack", "slide", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar", "gun", "wall-slam", "spin", "multi-uppercut", "fly-in", "ground-pound"];
   behavior.motion = String(behavior.motion || moveBehaviorDefaults[type].motion).toLowerCase();
   if (!allowedMotion.includes(behavior.motion)) behavior.motion = moveBehaviorDefaults[type].motion;
   behavior.speed = clampNumber(behavior.speed, 0, type === "gun" || behavior.motion === "gun" ? 1600 : 700, moveBehaviorDefaults[type].speed);
@@ -593,6 +644,7 @@ function normalizeMove(move, fighterConfig = {}, depth = 0) {
   if (behavior.motion === "multi-uppercut") behavior.rise = clampNumber(behavior.rise, 120, 620, 300);
   if (behavior.motion === "fly-in") { behavior.flySpeed = clampNumber(behavior.flySpeed ?? behavior.speed, 320, 1100, 620); behavior.flyHeight = clampNumber(behavior.flyHeight, 0, 260, 96); }
   if (behavior.motion === "ground-pound") { behavior.slamSpeed = clampNumber(behavior.slamSpeed, 480, 1600, 980); behavior.shockRadius = clampNumber(behavior.shockRadius, 90, 420, 210); }
+  if (behavior.motion === "slide") behavior.slideSpeed = clampNumber(behavior.slideSpeed ?? behavior.speed, 180, 560, 360);
   behavior.homing = clampNumber(behavior.homing, 0, 1, 0);
   behavior.spread = clampNumber(behavior.spread, -75, 75, behavior.pattern === "fan" ? 22 : 0);
   behavior.bounces = Math.round(clampNumber(behavior.bounces, 0, 3, 0));
@@ -635,12 +687,12 @@ const rebuiltKungFuConfig = {
   style: "classic pressure fighter / disciplined rushdown",
   personality: "calm, focused, and impossible to keep down",
   backstory: "A traveling martial artist who turns every exchange into a lesson and every lesson into another hit.",
-  buttons: 4,
-  combo: 4,
+  buttons: 6,
+  combo: 2,
   emojis: ["👊", "🦵", "🐉", "💥"],
   color: "#f2c447",
   accent: "#e65342",
-  banter: ["Hands up. Breathe. Begin.", "Your opening is already gone."],
+  banter: [],
   specials: [
     { name:"Iron Palm", type:"melee", role:"light-punch", variant:"light", startup:5, active:3, endlag:10, hitstun:15, reach:138, visual:{ effect:"arc", mainVfx:"main_slash2_color1", hitVfx:"hit_round_spark", vfxFps:20, color:"#f2c447", secondary:"#fff8d2", size:56, emoji:"✦" }, behavior:{ motion:"none", radius:0, knockback:{ horizontal:150, vertical:0, hitstop:.035, carry:true } }, animation:{ style:"strike", windup:"none", contact:"fist", finish:"follow-through", intensity:.78, transform:{ rotateY:-18, scaleX:1.08 } } },
     { name:"Ora Barrage", type:"combo", role:"light-punch", variant:"light", startup:4, active:15, endlag:8, hitstun:28, reach:174, visual:{ effect:"slashes", mainVfx:"main_slash3_color2", hitVfx:"hit_middle_directional", vfxFps:24, color:"#ff6c61", secondary:"#fff0b4", size:68, emoji:"ORA" }, behavior:{ motion:"rapid-jab", rapidHits:5, rapidInterval:.075, radius:0, knockback:{ horizontal:70, vertical:0, hitstop:.025, carry:true } }, animation:{ style:"strike", windup:"none", contact:"fist", finish:"follow-through", gesture:"ora barrage", intensity:1.08, transform:{ scaleX:1.12, skewY:.12 } } },
@@ -650,6 +702,10 @@ const rebuiltKungFuConfig = {
   ]
 };
 kungFuMan.config = sanitizeFighter(rebuiltKungFuConfig, normalizeMove, rebuiltKungFuConfig);
+// These authored benchmark attacks predate the editor's explicit category
+// field. Keep them in the signature-special pool when the universal normals
+// are backfilled at runtime.
+kungFuMan.config.specials = kungFuMan.config.specials.map((move) => ({ ...move, category: move.category || "special" }));
 kungFuMan.script = buildFighterModule(kungFuMan.config, normalizeMove);
 
 
@@ -683,7 +739,10 @@ const RULES = {
   groundBounceHeight: 560, wallBounceSpeed: 560, wallBounceHeight: 600,
   bounceJuggle: 22, otgWindow: .5, otgJuggle: 14,
   counterDamage: 1.35, counterHitstun: 1.45,
-  gravity: 1700, koSlowmo: .26
+  gravity: 1700, koSlowmo: .26,
+  // One deliberate burst of horizontal control per jump. The dash is short
+  // enough to be a positioning tool, not a way to permanently hover.
+  airDashDuration: .18, airDashSpeed: 760
 };
 const ARCHETYPES = {
   rushdown: { idealGap: 118, aggression: .96, blockBias: .78, jumpBias: 1.15, zoneBias: .25, punish: 1.05, patience: .35 },
@@ -708,10 +767,14 @@ function resetCombo(f) {
 }
 
 function fighterArchetype(me) {
+  const authored = String(me.fighter.config?.ai?.archetype || "").toLowerCase();
+  if (ARCHETYPES[authored]) return authored;
   const moves = combatMoves(me), total = moves.length || 1;
-  const ranged = moves.filter(isRanged).length / total;
-  const grapples = moves.filter(isGrapple).length / total;
-  const fast = moves.filter(move => moveFrames(move).startup <= 8).length / total;
+  const signature = moves.filter(move => !/^(?:light|medium|heavy) (?:punch|kick)$/i.test(String(move.name || "")));
+  const signatureTotal = signature.length || total;
+  const ranged = signature.filter(isRanged).length / signatureTotal;
+  const grapples = signature.filter(isGrapple).length / signatureTotal;
+  const fast = signature.filter(move => moveFrames(move).startup <= 8).length / signatureTotal;
   if (ranged >= .5) return "zoner";
   if (grapples >= .34) return "grappler";
   if (fast >= .5 || (Number(me.fighter.config?.combo) || 2) >= 4) return "rushdown";
@@ -723,9 +786,13 @@ function fighterArchetype(me) {
 function threatLevel(me, foe) {
   const state = foe.attackState; if (!state) return 0;
   const remaining = state.startup / 60 - state.t;
-  if (remaining < -.03) return 0;
   const distance = Math.abs(foe.x - me.x), range = (state.hitRange || 180) + 46;
   if (distance > range) return 0;
+  // Startup is the best time to react, but an attack that is already active
+  // is still dangerous. Dropping threat to zero on the first active frame made
+  // custom fighters walk into slow, obvious swings instead of respecting them.
+  const activeEnd = (state.startup + state.active) / 60;
+  if (remaining < -.03) return state.t <= activeEnd ? .92 : 0;
   return Math.max(0, Math.min(1, 1 - remaining / .34));
 }
 // A move that has passed its active frames without confirming is a free punish.
@@ -743,11 +810,11 @@ function isLowHit(move, variant) { return variant === "crouch" || move?.low === 
 function startBattle() {
   const left = fighterById(selected[0]), right = fighterById(selected[1]);
   document.body.classList.add("in-match");
-  battle = { left, right, fighters:[makeCombatant(left, FIGHT_START_LEFT, 1), makeCombatant(right, FIGHT_START_RIGHT, -1)], projectiles:[], phase:"banter", elapsed:0, shake:0, hitstop:0, round:1, wins:[0,0], maxRounds:3, messageIndex:0, result:"", clock:RULES.roundTime, koTimer:0, pendingWinner:null, bannerTimer:0 };
+  battle = { left, right, fighters:[makeCombatant(left, FIGHT_START_LEFT, 1), makeCombatant(right, FIGHT_START_RIGHT, -1)], projectiles:[], phase:"intro", elapsed:0, shake:0, hitstop:0, round:1, wins:[0,0], maxRounds:3, messageIndex:0, introLines:null, result:"", clock:RULES.roundTime, koTimer:0, pendingWinner:null, bannerTimer:0 };
   camera.x = camera.targetX = 640; camera.y = camera.targetY = 330; camera.zoom = camera.targetZoom = 1; camera.focus = null;
   $("#left-name").textContent = left.name.toUpperCase(); $("#right-name").textContent = right.name.toUpperCase(); $("#left-wins").textContent = 0; $("#right-wins").textContent = 0; $("#result").classList.remove("show"); $("#rematch").hidden = true;
-  $("#mode-label").textContent = "WATCH MODE"; $("#round-text").textContent = "ROUND 1"; $("#timer").textContent = RULES.roundTime; hideComboReadout(); hideMoveCallout(); updateHud();
-  setBanter(left.config?.banter?.[0] || "The arena is ready.");
+  $("#mode-label").textContent = "WATCH MODE"; $("#round-text").textContent = "ROUND 1"; $("#timer").textContent = RULES.roundTime; hideComboReadout(); hideMoveCallout(); clearBanter(); updateHud();
+  beginPreFightDialogue(battle);
 }
 function showBanner(text, duration = 1.1, tone = "") {
   const el = $("#result"); el.textContent = text; el.dataset.tone = tone; el.classList.add("show");
@@ -761,25 +828,93 @@ function beginRoundProper() {
 }
 function makeCombatant(fighter,x,dir) {
   const aptitude = Number(fighter.config?.combo) || 2;
-  // Combo aptitude describes a fighter's style, not perfect execution. Keep a
-  // separate, slightly noisy skill value so a strong blueprint can still make
-  // believable reads, hesitations, and dropped links.
-  const examplePenalty = fighter.example ? .08 : 0, skill = Math.min(.9, Math.max(.48, .6 + (aptitude - 2) * .05 - examplePenalty + (Math.random() - .5) * .07));
-  const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null, grappleLock:0,
+  // A forged kit is the thing being tested, so its pilot gets decisive inputs
+  // and a good read on neutral. Kung Fu Man remains the transparent baseline:
+  // competent enough to teach the systems, but not a hidden final boss.
+  const forgePilot = !fighter.example;
+  // Custom stat sliders (1-5). KFM is locked at 1 (lowest) on every axis.
+  const statSmartness  = forgePilot ? Math.max(1, Math.min(5, Number(fighter.config?.smartness)  || 3)) : 1;
+  const statAggression = forgePilot ? Math.max(1, Math.min(5, Number(fighter.config?.aggression) || 3)) : 1;
+  const statDefense    = forgePilot ? Math.max(1, Math.min(5, Number(fighter.config?.defense)    || 3)) : 1;
+  const statSpeed      = forgePilot ? Math.max(1, Math.min(5, Number(fighter.config?.speed)      || 3)) : 1;
+  const statRange      = forgePilot ? Math.max(1, Math.min(5, Number(fighter.config?.range)      || 3)) : 3;
+  // Smartness 1 ≈ original KFM (~0.38-0.46 skill); 5 ≈ improved KFM (~0.72-0.80).
+  const skillBase = 0.38 + (statSmartness - 1) * 0.085;
+  const skill = Math.min(skillBase + 0.10, Math.max(skillBase - 0.02,
+    skillBase + (aptitude - 2) * .02 + (Math.random() - .5) * .04));
+  const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, hitDirection:0, bounceTimer:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airDash:0, airDashUsed:false, airDashDir:dir, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null, grappleLock:0,
     meter:0, guard:RULES.guardMax, guardBroken:0, guardImmune:0, wallSlam:null, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
     groundBouncePending:0, bounceUsed:false, wallBounceUsed:false, otgUsed:false, followUpWindow:null, pushblockCd:0, guardStreak:0,
     combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.round(8 + aptitude * 8) } };
   // A high combo stat is not just a longer counter - it is a faster, lighter
   // fighter. Agility scales startup, recovery, footspeed and jump arc, so the
   // combo-heavy blueprints actually move like combo characters.
-  c.agility = Math.min(1.42, Math.max(.82, .88 + (aptitude - 2) * .075));
-  const archetype = fighterArchetype(c);
-  c.ai = { skill, archetype, profile:{ ...ARCHETYPES[archetype] }, lastMoveKey:"", hesitation:0,
+  // Low combo aptitude should mean shorter routes, not a fighter who cannot
+  // physically play neutral. Custom fighters get a reliable baseline, then
+  // still scale upward with the authored combo stat.
+  const agilityFloor = fighter.example ? .9 : .85 + (statSpeed - 1) * .065;
+  c.agility = Math.min(1.38, Math.max(agilityFloor, agilityFloor + (aptitude - 2) * .07));
+  // Range stat scales how far this fighter's attacks reach and how the AI reads space.
+  c.reachMult = fighter.example ? 1.0 : 0.82 + (statRange - 1) * 0.095; // 1: 0.82, 3: 1.01, 5: 1.20
+  const archetype = fighterArchetype(c), authoredAi = fighter.config?.ai || {}, ranges = aiMoveRanges(c);
+  const clampAi = (value, min, max, fallback) => Math.min(max, Math.max(min, Number.isFinite(Number(value)) ? Number(value) : fallback));
+  const authoredGap = clampAi(authoredAi.idealGap, 80, 500, ARCHETYPES[archetype].idealGap);
+  // AI-authored spacing is a hint, not a teleport target. A generated fighter
+  // with a short-range kit should still enter its own range even if the pilot
+  // pass guessed a zoner-like gap, while a real projectile kit keeps its room.
+  const gapCeiling = archetype === "zoner" ? Math.max(300, Math.min(500, ranges.rangedReach * .88)) : Math.max(132, ranges.meleeReach + 28);
+  const practicalGap = Math.min(authoredGap, gapCeiling);
+  const aggrFloor = forgePilot ? 0.20 + statAggression * 0.15 : 0;
+  const aggrCap   = forgePilot ? 0.50 + statAggression * 0.14 : 1.4;
+  const patCap    = forgePilot ? 1.40 - statAggression * 0.18 : 1.5;
+  const blkCap    = forgePilot ? 1.42 - statDefense * 0.14 : 1.8;
+  const punFloor  = forgePilot ? 0.55 + statDefense * 0.14 : 0.25;
+  const profile = { ...ARCHETYPES[archetype],
+    aggression:Math.min(aggrCap, Math.max(aggrFloor, clampAi(authoredAi.aggression, 0, 1.4, ARCHETYPES[archetype].aggression))),
+    idealGap:clampAi(practicalGap, 80, 500, ARCHETYPES[archetype].idealGap),
+    blockBias:Math.min(blkCap, clampAi(authoredAi.blockBias, .25, 1.8, ARCHETYPES[archetype].blockBias)),
+    jumpBias:clampAi(authoredAi.jumpBias, 0, 1.8, ARCHETYPES[archetype].jumpBias),
+    zoneBias:clampAi(authoredAi.zoneBias, 0, 2.2, ARCHETYPES[archetype].zoneBias),
+    punish:Math.max(punFloor, clampAi(authoredAi.punish, .25, 1.8, ARCHETYPES[archetype].punish)),
+    patience:Math.min(patCap, clampAi(authoredAi.patience, .15, 1.5, ARCHETYPES[archetype].patience)),
+    antiAir:clampAi(authoredAi.antiAir, 0, 1.5, .72),
+    comboCommit:Math.max(forgePilot ? .88 : .25, clampAi(authoredAi.comboCommit, .25, 1.2, .72)),
+    preferredMoves:Array.isArray(authoredAi.preferredMoves) ? authoredAi.preferredMoves.map(name => String(name).toLowerCase()) : [],
+    avoidMoves:Array.isArray(authoredAi.avoidMoves) ? authoredAi.avoidMoves.map(name => String(name).toLowerCase()) : []
+  };
+  c.ai = { skill, archetype, profile, ranges, lastMoveKey:"", hesitation:0,
     intent:"neutral", intentTimer:0, think:Math.random() * .1, reaction:Math.max(.075, .27 - skill * .21),
     blockedStreak:0, hitStreak:0, pressure:0, respect:.5 };
   return c;
 }
-function setBanter(text) { const el = $("#banter"); el.textContent = text; el.classList.add("show"); }
+function fighterDialogueProfile(fighter) {
+  const config = fighter.config || {}, moves = Array.isArray(config.specials) ? config.specials.slice(0, 5).map(move => move.name).filter(Boolean).join(", ") : "";
+  return `Name: ${fighter.name}. Prompt: ${fighter.prompt || "not supplied"}. Style: ${config.style || "not supplied"}. Personality: ${config.personality || "not supplied"}. Backstory: ${config.backstory || "not supplied"}. Signature moves: ${moves || "not supplied"}.`;
+}
+async function beginPreFightDialogue(match) {
+  const create = window.websim?.chat?.completions?.create;
+  // No generic substitute dialogue: an unavailable runtime means an immediate
+  // clean jump into the round, exactly like choosing to skip the intro.
+  if (typeof create !== "function") { if (battle === match) beginRoundProper(); return; }
+  const system = `Write a tiny pre-fight exchange for an arcade fighting game. Return JSON only: {"left":"...","right":"..."}. Each line is 4-16 words, direct speech, and a respectful challenge. Make each voice reflect only the supplied fighter profile. If a profile clearly references existing source material, aim for its broad voice without quoting, claiming canon, or inventing lore facts. Avoid narrator text, stage directions, profanity, and generic arena announcements.`;
+  const user = `LEFT FIGHTER\n${fighterDialogueProfile(match.left)}\n\nRIGHT FIGHTER\n${fighterDialogueProfile(match.right)}`;
+  try {
+    const completion = await Promise.race([
+      create({ messages:[{ role:"system", content:system }, { role:"user", content:user }], json:true }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Pre-fight dialogue timed out.")), 4500))
+    ]);
+    const lines = parseAiJson(completion.content);
+    const left = String(lines.left || "").replace(/\s+/g, " ").trim().slice(0, 150);
+    const right = String(lines.right || "").replace(/\s+/g, " ").trim().slice(0, 150);
+    if (!left || !right) throw new Error("Incomplete pre-fight dialogue.");
+    if (battle !== match || match.phase !== "intro") return;
+    match.introLines = [left, right]; match.phase = "banter"; match.elapsed = 0; match.messageIndex = 0;
+    setBanter(left, match.left.name, "left");
+  } catch {
+    if (battle === match && match.phase === "intro") beginRoundProper();
+  }
+}
+function setBanter(text, speaker = "", side = "left") { const el = $("#banter"); el.querySelector(".banter-speaker").textContent = speaker ? `${speaker.toUpperCase()} // COMMS` : ""; el.querySelector(".banter-text").textContent = text; el.dataset.side = side; el.classList.remove("show"); void el.offsetWidth; el.classList.add("show"); }
 function clearBanter() { $("#banter").classList.remove("show"); }
 function hideComboReadout() { const el = $("#combo-readout"); el.classList.remove("show", "leaving"); el.removeAttribute("data-side"); if (comboReadoutTimer) clearTimeout(comboReadoutTimer); comboReadoutTimer = 0; }
 function hideMoveCallout() { const el = $("#move-callout"); if (!el) return; el.classList.remove("show"); if (moveCalloutTimer) clearTimeout(moveCalloutTimer); moveCalloutTimer = 0; }
@@ -814,9 +949,10 @@ function fightTick(dt) {
   if (!battle) return;
   if (battle.bannerTimer > 0 && (battle.bannerTimer -= dt) <= 0 && battle.phase !== "between" && battle.phase !== "done") hideBanner();
   const [a,b] = battle.fighters;
+  if (battle.phase === "intro") { updateCamera(dt, .95); return; }
   if (battle.phase === "banter") {
     battle.elapsed += dt; updateCamera(dt, .95);
-    if (battle.elapsed > 1.9 && battle.messageIndex === 0) { setBanter(b.fighter.config?.banter?.[1] || "Show me what you forged."); battle.messageIndex++; battle.elapsed=0; }
+    if (battle.elapsed > 1.9 && battle.messageIndex === 0) { setBanter(battle.introLines?.[1] || "", battle.right.name, "right"); battle.messageIndex++; battle.elapsed=0; }
     else if (battle.messageIndex && battle.elapsed > 1.65) beginRoundProper();
     return;
   }
@@ -840,6 +976,13 @@ function fightTick(dt) {
   updateGuard(a, dt); updateGuard(b, dt);
   updateCombo(a, dt); updateCombo(b, dt); updateAttack(a, b, dt); updateAttack(b, a, dt);
   updateAI(a,b,dt); updateAI(b,a,dt); updatePhysics(a,dt); updatePhysics(b,dt); resolvePushBoxes(a,b);
+  // Track direction changes for the 3-D turn squash in drawFighter.
+  for (const f of battle.fighters) {
+    if (f.prevDir === undefined) f.prevDir = f.dir;
+    if (f.prevDir !== f.dir) f.turnTimer = 0.11;
+    if ((f.turnTimer || 0) > 0) f.turnTimer = Math.max(0, f.turnTimer - dt);
+    f.prevDir = f.dir;
+  }
   updateProjectiles(dt); updateCamera(dt, 1);
   if (a.hp <= 0 || b.hp <= 0) finishRound(a.hp <= 0 && b.hp <= 0 ? null : a.hp <= 0 ? 1 : 0, "K.O.");
   else if (battle.clock <= 0) finishRound(a.hp === b.hp ? null : a.hp > b.hp ? 0 : 1, "TIME OVER");
@@ -876,10 +1019,38 @@ function throwMove(me) { return normalizeMove(UNIVERSAL_THROW, me.fighter.config
 
 function combatMoves(me) {
   const configured = Array.isArray(me.fighter.config?.specials) ? me.fighter.config.specials : [];
-  return (configured.length ? configured : [{ name:"Quick Strike", type:"melee", variant:"light" }]).map(move => normalizeMove(move, me.fighter.config));
+  const moves = configured.map(move => normalizeMove(move, me.fighter.config));
+  const basicDefaults = [
+    ["Light Punch", "light-punch", "light", 4, 10], ["Medium Punch", "medium-punch", "medium", 6, 12], ["Heavy Punch", "heavy-punch", "heavy", 9, 18],
+    ["Light Kick", "light-kick", "light", 5, 11], ["Medium Kick", "medium-kick", "medium", 7, 15], ["Heavy Kick", "heavy-kick", "heavy", 10, 20]
+  ];
+  const basics = basicDefaults.map(([name, role, variant, startup, endlag]) => moves.find(move => {
+    const category = String(move.category || "").toLowerCase();
+    const exactName = String(move.name || "").toLowerCase() === name.toLowerCase();
+    return category !== "special" && (exactName || (category === "normal" && moveRole(move) === role));
+  }) || normalizeMove({ name, role, variant, category:"normal", type:"melee", startup, active:3, endlag, hitstun:variant === "heavy" ? 16 : 12 }, me.fighter.config));
+  const combined = [...basics, ...moves.filter(move => !basics.includes(move))];
+  return combined.length ? combined : basics;
+}
+function aiMoveRanges(me) {
+  const moves = combatMoves(me);
+  const melee = moves.filter(move => !isRanged(move) && !isGrapple(move));
+  const ranged = moves.filter(isRanged);
+  const practical = melee.filter(move => moveFrames(move).startup <= 14);
+  const reachOf = (move, variant = "ground") => moveDecisionRange(move, variant);
+  const mult = me.reachMult || 1;
+  const meleeReach = Math.max(120, ...melee.map(move => reachOf(move))) * mult;
+  const pokeReach = Math.max(112, ...practical.map(move => reachOf(move))) * mult;
+  const rangedReach = Math.max(260, ...ranged.map(move => moveReach(move))) * mult;
+  return { meleeReach, pokeReach, rangedReach };
 }
 function isLauncher(move) {
-  return move?.launcher === true || move?.role === "launcher" || move?.behavior?.motion === "multi-uppercut" || /launch|uppercut|rising|breaker|lift|sky|anti.?air|dragon/i.test(move?.name || "");
+  // Explicit launchers remain hard launchers. A rising attack without that
+  // declaration is a soft launcher: it pops both fighters up, then releases
+  // early for an air cancel instead of owning the full launcher route.
+  if (move?.launcher === true || move?.role === "launcher") return true;
+  if (isRisingAttack(move)) return false;
+  return /launch|uppercut|breaker|lift|sky|anti.?air|dragon/i.test(move?.name || "");
 }
 function isRapidJab(move) {
   const name = String(move?.name || "").toLowerCase(), behavior = move?.behavior || {};
@@ -931,7 +1102,12 @@ function canLink(previous, next, previousVariant = "ground", nextVariant = "grou
   // "normal into special" work at all. A gatling chain gets a smaller
   // discount. A raw link has to beat the full endlag on frame data alone.
   const recovery = mode === "cancel" ? from.endlag * .15 : mode === "gatling" ? from.endlag * .55 : from.endlag;
-  return reach && from.hitstun + rapidBuffer >= recovery + into.startup + 1;
+  // Give links a tiny input buffer. With the old exact comparison, a normal
+  // with 12F hitstun could not link into a 6F normal after 10F of recovery
+  // (12 < 5.5 + 6 + 1), so generated fighters frequently abandoned their
+  // first confirmed string while Kung Fu Man's authored route happened to
+  // survive it. The buffer is small enough to keep frame data meaningful.
+  return reach && from.hitstun + rapidBuffer + 2 >= recovery + into.startup;
 }
 function comboCandidates(moves, phase, used = new Set()) {
   const pool = phase === "air" ? airComboMoves(moves) : moves;
@@ -1012,12 +1188,19 @@ function buildGatlingString(normals, depth) {
 
 function buildComboPlan(me, foe) {
   const moves = combatMoves(me);
+  const distance = Math.abs(foe.x - me.x);
   const usable = moves.filter(move => !isRanged(move) && !isGrapple(move) && !isDiveKick(move));
   if (!usable.length) return null;
 
+  // Forged fighters do not always arrive with editor category metadata. Treat
+  // fast, grounded attacks as practical normals so their AI can still build a
+  // sensible hit-confirm instead of reserving routing for the benchmark kit.
+  const grounded = usable.filter(move => !move.air && !isLauncher(move));
   const normals = usable.filter(move => moveCategory(move) === "normal" && !isLauncher(move));
+  const routeNormals = normals.length ? normals : grounded.filter(move => moveFrames(move).startup <= 12);
   const specials = usable.filter(move => moveCategory(move) === "special" && !isLauncher(move));
-  const launcher = usable.find(isLauncher) || usable.find(isMultiUppercut) || null;
+  const routeSpecials = specials.length ? specials : grounded.filter(move => !routeNormals.includes(move));
+  const launcher = usable.find(isLauncher) || usable.find(isRisingAttack) || usable.find(isMultiUppercut) || null;
   const wallSlammer = usable.find(isWallSlam);
   const skill = me.ai?.skill || .64;
   const aptitude = Number(me.fighter.config?.combo) || 2;
@@ -1025,7 +1208,17 @@ function buildComboPlan(me, foe) {
   const airDepth = Math.max(2, Math.round(RULES.airStringDepth * (.5 + skill * .8)));
   const room = Math.min(foe.x - RULES.wallLeft, RULES.wallRight - foe.x);
 
+  // Optional jump-in opener: air move → land → ground gatling → launcher → juggle.
+  // Prefer air kicks for the realistic cross-up feeling of a jump-in combo.
+  const jumpInCandidates = comboCandidates(moves, "air", new Set())
+    .filter(move => !isDiveKick(move) && moveWeight(move) <= 2)
+    .sort((a, b) => (/kick/i.test(a.name) ? -1 : 1) - (/kick/i.test(b.name) ? -1 : 1)
+      || moveFrames(a).startup - moveFrames(b).startup);
+  const jumpIn = jumpInCandidates[0] || null;
+  const useJumpIn = jumpIn && distance > 140 && distance < 420 && Math.random() < (.40 + skill * .32);
+
   const steps = [{ action: "dash" }];
+  if (useJumpIn) steps.push({ move: jumpIn, air: true, jumpIn: true });
   let previous = null;
 
   // One rep is a complete fighting-game cycle: neutral normals gatling upward,
@@ -1037,7 +1230,7 @@ function buildComboPlan(me, foe) {
     const used = new Set();
     let opened = false;
 
-    const gatling = buildGatlingString(normals, depth);
+    const gatling = buildGatlingString(routeNormals, depth);
     for (const step of gatling.route) {
       // A new rep starts on the ground: whatever ended the last one has by now
       // spiked them back down in front of us.
@@ -1045,7 +1238,7 @@ function buildComboPlan(me, foe) {
       steps.push({ ...step, rep: index }); used.add(step.move); previous = step.move; opened = true;
     }
 
-    const cancelInto = specials
+    const cancelInto = routeSpecials
       .filter(move => !used.has(move))
       .sort((a, b) => moveHitCount(b) - moveHitCount(a) || moveFrames(a).startup - moveFrames(b).startup);
     for (const move of cancelInto) {
@@ -1094,13 +1287,29 @@ function buildComboPlan(me, foe) {
   if (!built) return null;
 
   const realSteps = steps.filter(step => step.move);
-  if (realSteps.length < 2) return null;
+  // A kit without a launcher can still confirm two grounded buttons. This is
+  // deliberately a short route: it gives sparse custom kits competence
+  // without pretending every fighter is a juggle specialist.
+  if (realSteps.length < 2 && grounded.length >= 2) {
+    const fallback = grounded.slice().sort((a, b) => moveFrames(a).startup - moveFrames(b).startup || moveWeight(a) - moveWeight(b));
+    const fallbackSteps = fallback.slice(0, Math.min(3, fallback.length)).map((move, index) => ({ move, fallback:true, cancel:index > 0 }));
+    steps.splice(1, steps.length - 1, ...fallbackSteps);
+  }
+  const confirmedSteps = steps.filter(step => step.move);
+  if (confirmedSteps.length < 2) return null;
+  // If neutral has already brought us into the opener's range, begin on the
+  // first button immediately. Routes still use the short dash when needed, but
+  // they no longer look like an empty run before every string.
+  const openingStep = steps.find(step => step.move);
+  const opening = openingStep?.move;
+  const openingInRange = opening && distance <= moveDecisionRange(opening, openingStep.crouch ? "crouch" : "ground");
+  if (openingInRange && steps[0]?.action === "dash") steps.shift();
 
   me.comboPlanSerial += 1;
   me.comboPlan = {
-    id: me.comboPlanSerial, target: foe, dashTimer: .12,
-    reliability: Math.min(.94, Math.max(.55, skill + .1)),
-    projectedHits: realSteps.reduce((total, step) => total + moveHitCount(step.move), 0),
+    id: me.comboPlanSerial, target: foe, dashTimer: openingInRange ? 0 : .12,
+    reliability: Math.min(.97, Math.max(.76, skill * (.86 + (me.ai?.profile?.comboCommit || .72) * .15))),
+    projectedHits: confirmedSteps.reduce((total, step) => total + moveHitCount(step.move), 0),
     steps
   };
   me.comboStep = 0;
@@ -1114,10 +1323,12 @@ function airComboApproach(me, foe, move) {
   const desiredX = foe.x - chaseDir * idealGap, error = desiredX - me.x;
   me.vx = Math.max(-520, Math.min(520, error * 9.5));
   if (Math.abs(error) < 22) me.vx *= .45;
-  // Aim slightly above the foe — juggle targets fall fast, so tracking their
-  // exact Y means attacks pass below them before the hitbox resolves.
-  const verticalError = (foe.y - 28) - me.y;
-  if (Math.abs(verticalError) > 14) me.vy = Math.max(-860, Math.min(660, me.vy + verticalError * 5.6));
+  // Aim slightly above where the foe will be when the next attack becomes
+  // active, rather than where they were on this frame. That one small lead is
+  // what keeps a juggle from swinging underneath a falling target.
+  const fallLead = Math.max(-36, Math.min(72, foe.vy * .11));
+  const verticalError = (foe.y - 38 + fallLead) - me.y;
+  if (Math.abs(verticalError) > 12) me.vy = Math.max(-960, Math.min(720, me.vy + verticalError * 6.8));
   me.running = false;
   return { distance:Math.abs(foe.x - me.x), vertical:Math.abs(foe.y - me.y), error };
 }
@@ -1135,7 +1346,12 @@ function updatePlannedCombo(me, foe, dt) {
   const inAirJuggle = !me.grounded && !foe.grounded && foe.juggle > 0;
   const comboLive = me.combo.count > 0 && me.combo.target === foe && (foe.hurt > 0 || inAirJuggle);
   if (!comboLive && foe.attackState && me.cd === 0 && distance < incomingRange + 34 && Math.random() < dt * (.55 + (me.ai?.skill || .62) * .65)) {
-    cancelComboPlan(me); if (me.ai) me.ai.hesitation = .1 + Math.random() * .12; return false;
+    cancelComboPlan(me);
+    // Forged fighters should recover from a read without looking like they
+    // forgot how to press a button. Keep the small pause on the benchmark,
+    // but let custom pilots immediately re-enter neutral.
+    if (me.ai && me.fighter.example) me.ai.hesitation = .02 + Math.random() * .03;
+    return false;
   }
   if (step.action === "dash") {
     plan.dashTimer -= dt; me.running = true; me.vx = me.dir * (330 + (Number(me.fighter.config?.combo) || 2) * 12); me.pose = "run";
@@ -1151,7 +1367,11 @@ function updatePlannedCombo(me, foe, dt) {
     step.linkChecked = true;
     const confirmed = me.combo.count >= 2 && me.combo.target === foe;
     const reliability = confirmed ? .99 : (plan.reliability || .64);
-    if (Math.random() > reliability) { cancelComboPlan(me); me.ai.hesitation = .12 + Math.random() * .12; return false; }
+    if (Math.random() > reliability) {
+      cancelComboPlan(me);
+      if (me.ai && me.fighter.example) me.ai.hesitation = .12 + Math.random() * .12;
+      return false;
+    }
   }
   // A cancel skips the previous move's recovery, so the next button is
   // available immediately rather than after the usual chain cooldown.
@@ -1175,8 +1395,8 @@ function updatePlannedCombo(me, foe, dt) {
   }
   if (step.crouch) me.crouch = .24; else if (me.grounded) me.crouch = 0;
   const airSpacing = step.air ? airComboApproach(me, foe, step.move) : null;
-  const inRange = (airSpacing?.distance ?? distance) <= moveHitRange(step.move, step.air ? "air" : me.crouch > 0 ? "crouch" : "ground"), verticalDistance = airSpacing?.vertical ?? Math.abs(foe.y - me.y);
-  if (inRange && (!step.air || verticalDistance < 240)) { startAttack(me, foe, step.move, me.comboStep); return true; }
+  const inRange = (airSpacing?.distance ?? distance) <= moveDecisionRange(step.move, step.air ? "air" : me.crouch > 0 ? "crouch" : "ground"), verticalDistance = airSpacing?.vertical ?? Math.abs(foe.y - me.y);
+  if (inRange && (!step.air || verticalDistance < 255)) { startAttack(me, foe, step.move, me.comboStep, { airFinisher:Boolean(step.finisher) }); return true; }
   if (!step.air) me.vx = me.dir * 285;
   me.running = !step.air; me.pose = step.air ? (me.runJump ? "run-jump" : "jump") : "run";
   return true;
@@ -1201,34 +1421,46 @@ function aiThink(me, foe) {
   const ai = me.ai, profile = ai.profile;
   const distance = Math.abs(foe.x - me.x), hp = me.hp / RULES.maxHp;
   const desperate = hp < .3, winning = me.hp > foe.hp + 40;
+  const attackOpportunity = combatMoves(me).some(move => {
+    const range = moveDecisionRange(move);
+    return distance <= range && (isRanged(move) || Math.abs(foe.y - me.y) < 170);
+  });
   const projectile = incomingProjectile(me);
   const openings = foe.guardBroken > 0 || (foe.down && foe.down.t > foe.down.duration - .28) || foe.frozen > 0;
   const superReady = me.meter >= RULES.superCost && combatMoves(me).length > 0;
-  let intent = "neutral", timer = ai.reaction * (1.4 + Math.random());
+  const superMove = superReady ? pickSuperMove(me) : null;
+  const superRange = superMove ? moveDecisionRange(superMove) : 0;
+  let intent = "neutral", timer = ai.reaction * (1.0 + Math.random() * .5);
 
   // A fresh knockdown with an unspent OTG is worth walking in for: a low
   // scrapes them off the floor and the combo carries on.
   const otgReady = foe.down && !foe.otgUsed && foe.down.t < foe.down.duration - RULES.wakeupInvuln && combatMoves(me).some(move => isLowHit(move, "crouch") || move.crouch === true || isGroundPound(move));
   if (otgReady && distance < 320) intent = "otg";
   else if (openings && distance < 420) intent = "punish";
-  else if (superReady && distance < 320 && (desperate || openings || foe.hurt > 0 || Math.random() < .18 + ai.skill * .3)) intent = "super";
-  else if (foeIsWhiffing(me, foe) && distance < 330) intent = "whiff-punish";
-  else if (!foe.grounded && foe.vy > -180 && distance < 260 && Math.random() < .45 + ai.skill * .45) intent = "antiair";
+  else if (superReady && distance < Math.max(380, superRange) && (desperate || openings || foe.hurt > 0 || Math.random() < .30 + ai.skill * .40)) intent = "super";
+  else if (foeIsWhiffing(me, foe) && distance < 320 && Math.random() < .28 + profile.punish * .18) intent = "whiff-punish";
+  else if (!foe.grounded && foe.vy > -180 && distance < 300 && Math.random() < .40 + ai.skill * .28) intent = "antiair";
   else if (projectile) intent = distance > 290 && Math.random() < .35 + profile.jumpBias * .25 ? "leap" : "block";
   else if (ai.blockedStreak >= 2 && distance < 280) intent = "anti-guard";
   else if (inCorner(me) && !inCorner(foe) && distance < 300 && Math.random() < .55 + ai.skill * .3) intent = "escape";
+  else if (inCorner(foe) && distance < 260 && Math.random() < .60 + ai.skill * .28) intent = "pressure";
   else if (foe.hurt > 0 && distance < 300) intent = "pressure";
   else if (foe.attackState && distance < (foe.attackState.hitRange || 180) + 60) {
     // Respect grows when we keep eating the same attack and shrinks when we
     // block so much that we are just feeding the opponent free pressure.
     const guardBias = profile.blockBias * (ai.respect + .35) * (me.guard / RULES.guardMax);
-    intent = Math.random() < guardBias * .6 ? "block" : Math.random() < .55 ? "evade" : "whiff-punish";
+    intent = Math.random() < guardBias * .6 ? "block" : Math.random() < .35 ? "evade" : "pressure";
   }
-  else if (combatMoves(me).some(isGun) && distance > 300 && Math.random() < .5) intent = "zone";
+  // A fighter that has a usable button in range should take the turn. The old
+  // spacing checks ran before this decision, so the pilot could drift into
+  // range, start a dash plan, and visibly fail to press an attack on entry.
+  else if (attackOpportunity) intent = "pressure";
+  else if (combatMoves(me).some(isGun) && distance > 260 && Math.random() < .62 + ai.skill * .2) intent = "zone";
   else if (combatMoves(me).some(isFlyIn) && distance > 300 && Math.random() < .35) intent = "fly-in";
   else if (!inCorner(foe) && combatMoves(me).some(isWallSlam) && distance < 200 && Math.random() < .4) intent = "wall-carry";
-  else if (profile.zoneBias > 1 && distance > 250 && Math.random() < profile.zoneBias * .4) intent = "zone";
-  else if (distance > profile.idealGap * 1.35) intent = Math.random() < profile.jumpBias * .22 ? "leap" : "approach";
+  else if (ai.archetype === "zoner" && distance < profile.idealGap * .8) intent = "space";
+  else if (profile.zoneBias > 1 && distance > 220 && Math.random() < profile.zoneBias * .52 + ai.skill * .14) intent = "zone";
+  else if (distance > profile.idealGap * 1.35) intent = Math.random() < (profile.jumpBias * .32 + ai.skill * .10) ? "leap" : "approach";
   else if (distance < profile.idealGap * .5 && !desperate && Math.random() < .32 * profile.patience) intent = "space";
   else if (Math.random() < profile.aggression * (desperate ? 1.15 : winning ? .88 : 1)) intent = "pressure";
   else intent = "neutral";
@@ -1243,21 +1475,36 @@ function aiWalk(me, target, speed, pose) {
   return false;
 }
 
+function aiEngageGap(me, intent = "neutral") {
+  const profile = me.ai?.profile || ARCHETYPES.balanced;
+  const ranges = me.ai?.ranges || { meleeReach: 193, pokeReach: 170, rangedReach: 390 };
+  if (intent === "zone") return Math.max(220, Math.min(profile.idealGap, ranges.rangedReach * .78));
+  if (intent === "pressure" || intent === "punish") return Math.max(86, Math.min(220, ranges.pokeReach * .64));
+  // Stand just inside the fighter's best practical button. This is more
+  // reliable than a universal 205px target for weapons, short normals, and
+  // generated kits whose useful range is very different from the benchmark.
+  return Math.max(105, Math.min(profile.idealGap, ranges.meleeReach * .86));
+}
+
 function aiTryAttack(me, foe, variant, intent, chance = 1) {
-  if (me.cd > 0 || me.ai.hesitation > 0) return false;
-  const move = chooseMove(me, foe, variant, intent);
-  if (!move) return false;
+  // Hesitation may keep a pilot from starting an elaborate combo route, but it
+  // must never suppress a basic attack when the opponent is in range.
+  if (me.cd > 0) return false;
   const distance = Math.abs(foe.x - me.x);
-  const inRange = isRanged(move) ? distance <= moveReach(move, variant) : distance <= moveHitRange(move, variant);
-  if (!inRange || Math.random() > chance) return false;
+  const candidates = rankMoves(me, foe, variant, intent).filter(({ move }) => {
+    const range = moveDecisionRange(move, variant);
+    return distance <= range;
+  }).slice(0, 3);
+  if (!candidates.length || Math.random() > chance) return false;
+  const move = pickRankedMove(candidates);
   startAttack(me, foe, move);
   return true;
 }
 
 function updateAI(me, foe, dt) {
   me.cd = Math.max(0,me.cd-dt); me.hurt=Math.max(0,me.hurt-dt); me.hitstunFrames=me.hurt>0 ? Math.ceil(me.hurt*60) : 0; me.frozen=Math.max(0,me.frozen-dt); me.invuln=Math.max(0,me.invuln-dt); me.recoveryCooldown=Math.max(0,me.recoveryCooldown-dt); me.dodge=Math.max(0,me.dodge-dt); me.jumpCd=Math.max(0,me.jumpCd-dt); me.crouch=Math.max(0,me.crouch-dt); me.blockFlash=Math.max(0,me.blockFlash-dt); me.airComboTimer=Math.max(0,me.airComboTimer-dt);
-  me.pushblockCd=Math.max(0,(me.pushblockCd||0)-dt);
-  me.counterFlash=Math.max(0,me.counterFlash-dt); me.superFlash=Math.max(0,me.superFlash-dt); me.techTimer=Math.max(0,me.techTimer-dt); me.backdash=Math.max(0,me.backdash-dt); me.grappleLock=Math.max(0,(me.grappleLock||0)-dt);
+  me.pushblockCd=Math.max(0,(me.pushblockCd||0)-dt); me.airDash=Math.max(0,(me.airDash||0)-dt);
+  me.counterFlash=Math.max(0,me.counterFlash-dt); me.superFlash=Math.max(0,me.superFlash-dt); me.techTimer=Math.max(0,me.techTimer-dt); me.bounceTimer=Math.max(0,(me.bounceTimer||0)-dt); me.backdash=Math.max(0,me.backdash-dt); me.grappleLock=Math.max(0,(me.grappleLock||0)-dt);
   const distance = Math.abs(foe.x-me.x), profile = me.ai.profile, skill = me.ai?.skill || .62;
   if (me.ai) me.ai.hesitation = Math.max(0, me.ai.hesitation - dt);
   if (me.airComboTarget && (me.airComboTimer === 0 || foe.grounded || foe.juggle <= 0)) me.airComboTarget = null;
@@ -1276,8 +1523,8 @@ function updateAI(me, foe, dt) {
       me.bounceUsed = false; me.wallBounceUsed = false; me.otgUsed = false;
       // Wake-up option: reversal, block, or just stand up.
       const roll = Math.random();
-      if (roll < .18 + skill * .22 && distance < 190) aiTryAttack(me, foe, "ground", "launcher", 1);
-      else if (roll < .6) startBlock(me, .3 + Math.random() * .2);
+      if (roll < .30 + skill * .36 && distance < 250) aiTryAttack(me, foe, "ground", "launcher", 1);
+      else if (roll < .56) startBlock(me, .22 + Math.random() * .16);
     }
     return;
   }
@@ -1288,7 +1535,6 @@ function updateAI(me, foe, dt) {
     if (me.recovery.t >= me.recovery.duration) { me.recovery = null; me.cd = Math.max(me.cd, .12); me.pose = me.grounded ? "idle" : "jump"; }
     return;
   }
-  if (me.attackState) return;
   if (me.grappledBy) { me.vx=0; me.pose="grappled"; return; }
   // The exclusive sequel outranks everything the AI would otherwise consider:
   // the window is short, and letting it lapse wastes the whole point of the move.
@@ -1303,13 +1549,13 @@ function updateAI(me, foe, dt) {
   }
   if (me.hurt > 0) {
     cancelComboPlan(me); if (!me.wallSlam) me.vx *= .88; me.pose = me.wallSlam ? "wall-carry" : "hurt";
-    // Recovery attempt only in the final frames of hitstun (0.08s left).
-    // Raising this window lets recovery trigger earlier, making it feel free —
-    // keep it tight so landing a hit actually guarantees a follow-up.
-    const lateHitstun = me.hurt <= .08;
-    if (lateHitstun && !me.recoveryAttempted) { me.recoveryAttempted = true; if (startRecovery(me, foe)) return; }
+    // Recovery is considered only in the configured late-hitstun window. The
+    // one-shot roll lives in startRecovery, after launcher eligibility checks.
+    const lateHitstun = me.hurt <= RULES.techWindow;
+    if (lateHitstun && !me.recoveryAttempted && startRecovery(me, foe)) return;
     return;
   }
+  if (me.attackState) return;
   if (me.blocking) {
     me.blockTimer -= dt; me.vx *= .7; me.pose = me.blockLow ? "block-low" : "block";
     // Holding guard until it shatters is the worst option available. Once the
@@ -1321,8 +1567,10 @@ function updateAI(me, foe, dt) {
     }
     if (me.blockTimer <= 0) {
       me.blocking = false; me.blockLow = false;
-      // Out of blockstun with the guard nearly gone and nothing to spend: make
-      // space instead of standing there for the next string.
+      // Counter after blocking — less reflexive so the combo game has room.
+      if (!worn && me.cd === 0 && distance < (me.ai?.ranges?.pokeReach || 180) + 60 && Math.random() < .22 + skill * .14) {
+        if (aiTryAttack(me, foe, "ground", "punish", 1)) return;
+      }
       if (worn && me.backdash === 0 && distance < 210 && Math.random() < .5 + skill * .35) {
         me.backdash = .5; me.dodge = .3; me.vx = -me.dir * (340 + skill * 90); me.pose = "evade"; me.guardStreak = 0;
         playSfx("airBackdash", { pan: panFromX(me.x), volume: .45 });
@@ -1376,21 +1624,63 @@ function updateAI(me, foe, dt) {
 
   // ── Think tick ───────────────────────────────────────────────────────────
   me.ai.think -= dt; me.ai.intentTimer -= dt;
-  if (me.ai.think <= 0 || me.ai.intentTimer <= 0) { me.ai.think = me.ai.reaction; aiThink(me, foe); }
+  const urgentRead = (foe.guardBroken > 0 && me.ai.intent !== "punish") ||
+    (foe.down && me.ai.intent !== "otg" && me.ai.intent !== "punish" && me.ai.intent !== "pressure");
+  if (me.ai.think <= 0 || me.ai.intentTimer <= 0 || urgentRead) { me.ai.think = me.ai.reaction; aiThink(me, foe); }
   executeIntent(me, foe, dt, distance, chainReady);
 }
 
 function updateAirAI(me, foe, dt, distance, skill) {
   const chasing = me.airComboTarget === foe && !foe.grounded && foe.juggle > 0;
-  const airMove = chooseMove(me, foe, "air", chasing ? "air-combo" : "air");
+  if (me.airDash > 0) {
+    me.vx = me.airDashDir * RULES.airDashSpeed;
+    me.vy *= .88; me.pose = "air-dash";
+    if (Math.random() < dt * 24) me.trail.push({ t:.16, x:me.x - me.airDashDir * 36, y:me.y - 56 });
+    // Air dash attack: attack out of the dash for a burst option.
+    const airDashRange = rankMoves(me, foe, "air", "air");
+    const dashAttackMove = airDashRange[0]?.move;
+    if (me.cd === 0 && dashAttackMove && Math.abs(foe.x - me.x) < moveDecisionRange(dashAttackMove, "air") + 28
+        && Math.abs(foe.y - me.y) < 180 && Math.random() < dt * (4.5 + skill * 3.0)) {
+      startAttack(me, foe, dashAttackMove); return;
+    }
+    return;
+  }
+  // Air-to-air: when both fighters are airborne, prioritise fast air normals.
+  const airToAir = !foe.grounded && !chasing;
+  if (airToAir && me.cd === 0) {
+    const ataPool = rankMoves(me, foe, "air", "air").filter(({ move }) => !isDiveKick(move) && moveFrames(move).startup <= 9);
+    const atMove = ataPool[0]?.move;
+    const ataDist = Math.abs(foe.x - me.x), ataVert = Math.abs(foe.y - me.y);
+    if (atMove && ataDist < moveDecisionRange(atMove, "air") + 18 && ataVert < 155 && Math.random() < dt * (6.0 + skill * 4.0)) {
+      startAttack(me, foe, atMove); return;
+    }
+  }
+  const finisherWindow = chasing && foe.y > 438 && foe.vy > 120;
+  const ranked = rankMoves(me, foe, "air", chasing ? "air-combo" : "air");
+  const enders = ranked.filter(({ move }) => isDiveKick(move) || move.variant === "heavy" || move.behavior?.knockback?.groundBounce === true);
+  const airMove = finisherWindow && enders.length ? pickRankedMove(enders, ranked[0]?.move) : pickRankedMove(ranked, null);
+  if (!airMove) return;
+  const verticalWindow = chasing ? 220 : 170;
+  const reachWindow = chasing ? moveDecisionRange(airMove, "air") + 20 : moveDecisionRange(airMove, "air");
+  const verticalGap = Math.abs(foe.y - me.y);
+  const incomingAirThreat = !foe.grounded && foe.attackState
+    && distance < (foe.attackState.hitRange || 180) + 70 && verticalGap < 190;
+  // Air dashes are deliberate: chase a launched foe that is slipping away,
+  // burst through open air toward a grounded foe, or retreat from a live aerial
+  // hitbox. One dash per jump keeps this readable and prevents hover loops.
+  if (!me.airDashUsed && me.juggle <= 0 && !me.wallSlam) {
+    const needsJuggleChase = chasing && distance > reachWindow * .62 && distance < 520 && verticalGap < 235;
+    const neutralApproach = !chasing && foe.grounded && distance > reachWindow * .9 && distance < 440
+      && me.y < RULES.floorY - 72 && me.vy < 220 && Math.random() < dt * (1.6 + skill * 1.8);
+    if (needsJuggleChase || neutralApproach) { startAirDash(me, me.dir); return; }
+    if (!chasing && incomingAirThreat && me.vy > -360 && Math.random() < dt * (5 + skill * 4)) { startAirDash(me, -me.dir); return; }
+  }
   const approach = chasing ? airComboApproach(me, foe, airMove) : null;
   if (!chasing) me.vx = me.dir * (me.runJump ? 240 : 155);
-  const verticalWindow = chasing ? 190 : 170;
-  const reachWindow = chasing ? moveHitRange(airMove, "air") + 40 : moveHitRange(airMove, "air");
   const aligned = (approach?.distance ?? distance) <= reachWindow && (approach?.vertical ?? Math.abs(foe.y - me.y)) < verticalWindow;
   const goodMoment = !chasing || Math.abs(me.vy - foe.vy) < 700 || me.vy > foe.vy - 340;
   const lastChance = chasing && foe.y > 470 && (approach?.distance ?? distance) <= reachWindow + 46;
-  if (me.cd === 0 && ((aligned && goodMoment) || lastChance) && (chasing || Math.random() < dt * (2.8 + skill * 2.6))) { startAttack(me, foe, airMove); }
+  if (me.cd === 0 && ((aligned && goodMoment) || lastChance) && (chasing || Math.random() < dt * (5.0 + skill * 3.8))) { startAttack(me, foe, airMove, null, { airFinisher:finisherWindow && (isDiveKick(airMove) || airMove.variant === "heavy") }); }
   else me.pose = me.runJump ? "run-jump" : "jump";
 }
 
@@ -1400,7 +1690,7 @@ function executeIntent(me, foe, dt, distance, chainReady) {
     case "super": {
       const move = pickSuperMove(me);
       if (!move) { ai.intent = "pressure"; return; }
-      const range = isRanged(move) ? moveReach(move) : moveHitRange(move);
+      const range = moveDecisionRange(move);
       if (distance <= range && me.cd === 0) { startAttack(me, foe, move, null, { super: true }); ai.intent = "neutral"; return; }
       aiWalk(me, foe.x - me.dir * range * .7, 300);
       return;
@@ -1409,9 +1699,10 @@ function executeIntent(me, foe, dt, distance, chainReady) {
     case "whiff-punish": {
       // Free damage. Walk in and take the biggest thing that reaches.
       if (me.cd === 0 && !me.comboPlan && distance < 300 && buildComboPlan(me, foe)) { updatePlannedCombo(me, foe, dt); return; }
+      if (me.cd === 0 && aiTryAttack(me, foe, "ground", "punish", 1)) return;
       if (aiTryAttack(me, foe, "ground", "launcher", .9)) return;
       if (aiTryAttack(me, foe, "ground", "special", 1)) return;
-      aiWalk(me, foe.x - me.dir * 110, 320);
+      aiWalk(me, foe.x - me.dir * aiEngageGap(me, "punish"), 320);
       return;
     }
     case "antiair": {
@@ -1437,7 +1728,7 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       // hit the half of the body they are not defending.
       const grabs = combatMoves(me).filter(isGrapple);
       const grab = grabs.length ? grabs[Math.floor(Math.random() * grabs.length)] : throwMove(me);
-      const grabRange = moveHitRange(grab);
+      const grabRange = moveDecisionRange(grab);
       if (me.grappleLock > 0) {
         // The last grab attempt is still cooling down - lean on a mix-up
         // instead of walking in for a grab that cannot come out yet.
@@ -1468,7 +1759,7 @@ function executeIntent(me, foe, dt, distance, chainReady) {
     case "fly-in": {
       const flyers = combatMoves(me).filter(isFlyIn);
       if (flyers.length && me.cd === 0) { startAttack(me, foe, flyers[Math.floor(Math.random() * flyers.length)]); return; }
-      aiWalk(me, foe.x - me.dir * profile.idealGap, 300);
+      aiWalk(me, foe.x - me.dir * aiEngageGap(me, "pressure"), 300);
       return;
     }
     case "otg": {
@@ -1476,16 +1767,16 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       const lows = combatMoves(me).filter(move => isLowHit(move, "crouch") || move.crouch === true || isGroundPound(move));
       const low = lows[Math.floor(Math.random() * lows.length)];
       if (!low) { ai.intent = "neutral"; return; }
-      if (me.cd === 0 && distance <= moveHitRange(low, "crouch")) { me.crouch = .3; startAttack(me, foe, low); return; }
-      aiWalk(me, foe.x - me.dir * 80, 330);
+      if (me.cd === 0 && distance <= moveDecisionRange(low, "crouch")) { me.crouch = .3; startAttack(me, foe, low); return; }
+      aiWalk(me, foe.x - me.dir * Math.max(72, Math.min(130, me.ai.ranges?.pokeReach * .52 || 90)), 330);
       return;
     }
     case "wall-carry": {
       // Drive them toward the nearest wall, then cash out with the slam.
       const slams = combatMoves(me).filter(isWallSlam);
       const slam = slams[0];
-      if (slam && me.cd === 0 && distance <= moveHitRange(slam)) { startAttack(me, foe, slam); return; }
-      aiWalk(me, foe.x - me.dir * 110, 310);
+      if (slam && me.cd === 0 && distance <= moveDecisionRange(slam)) { startAttack(me, foe, slam); return; }
+      aiWalk(me, foe.x - me.dir * Math.max(82, Math.min(150, moveDecisionRange(slam || { type: "melee" }) * .58)), 310);
       return;
     }
     case "escape": {
@@ -1495,40 +1786,99 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       me.vx = me.dir * 300; me.running = true; me.pose = "run";
       return;
     }
+    case "approach": {
+      // Mix dash runs and jump-ins to close distance dynamically.
+      if (distance > 280 && me.grounded && me.backdash === 0 && Math.random() < dt * 2.8) {
+        me.running = true; me.vx = me.dir * (340 + skill * 60); me.pose = "run"; return;
+      }
+      if (distance > 200 && distance < 400 && me.jumpCd === 0 && Math.random() < dt * (0.55 + skill * 0.35)) {
+        startJump(me, true); return;
+      }
+      if (me.cd === 0 && !me.comboPlan && distance < 340 && buildComboPlan(me, foe)) {
+        updatePlannedCombo(me, foe, dt);
+        return;
+      }
+      if (me.cd === 0 && aiTryAttack(me, foe, "ground", "pressure", 1)) {
+        ai.intent = "pressure";
+        return;
+      }
+      const target = foe.x - me.dir * aiEngageGap(me, "pressure");
+      if (aiWalk(me, target, 385)) ai.intent = "pressure";
+      return;
+    }
     case "leap": {
       if (me.jumpCd === 0) startJump(me, true);
-      else aiWalk(me, foe.x - me.dir * profile.idealGap, 260);
+      else aiWalk(me, foe.x - me.dir * aiEngageGap(me, "neutral"), 260);
       return;
     }
     case "zone": {
       const ranged = combatMoves(me).filter(isRanged);
-      if (ranged.length && me.cd === 0 && Math.random() < dt * (2.4 + skill * 1.6)) { startAttack(me, foe, ranged[Math.floor(Math.random() * ranged.length)]); return; }
-      aiWalk(me, foe.x - me.dir * profile.idealGap, 180);
+      // Don't stack projectiles — wait if one is already travelling toward the foe.
+      const alreadyFiring = (battle.projectiles || []).some(p => p.owner === me && !p.trap && !p.pillar && !p.exploding);
+      if (ranged.length && me.cd === 0 && !alreadyFiring && aiTryAttack(me, foe, "ground", "zone", 1)) return;
+      // Zoners back-walk to maintain distance while the projectile travels.
+      const zoneGap = aiEngageGap(me, "zone");
+      const tooClose = Math.abs(foe.x - me.x) < zoneGap * .75;
+      if (tooClose && !inCorner(me)) { me.vx = -me.dir * 160 * (me.agility || 1); me.pose = "walk"; me.running = false; }
+      else aiWalk(me, foe.x - me.dir * zoneGap, 160);
       return;
     }
     case "space": {
       // Hold the range where my move reaches and theirs does not.
-      const wanted = foe.x - me.dir * profile.idealGap;
+      const wanted = foe.x - me.dir * aiEngageGap(me, "neutral");
       if (aiWalk(me, wanted, 220) && me.cd === 0 && Math.random() < dt * 1.4) me.crouch = .28;
       return;
     }
     case "pressure": {
       if (chainReady && me.cd === 0 && aiTryAttack(me, foe, me.crouch > 0 ? "crouch" : "ground", "chain", 1)) return;
-      if (!me.comboPlan && me.cd === 0 && ai.hesitation === 0 && distance < 340) {
+      // Forged fighters always attempt a real route. Kung Fu Man still drops
+      // some routes as the baseline, but a plan starts directly on its opener
+      // whenever it is already in range.
+      const routeCommit = me.fighter.example ? (ai.profile.comboCommit || .72) : 1;
+      if (!me.comboPlan && me.cd === 0 && ai.hesitation === 0 && distance < 340 && Math.random() < routeCommit) {
         if (buildComboPlan(me, foe)) { updatePlannedCombo(me, foe, dt); return; }
       }
-      const wantLauncher = distance < 215 && Math.random() < .1 + skill * .18;
-      if (aiTryAttack(me, foe, me.crouch > 0 ? "crouch" : "ground", wantLauncher ? "launcher" : "special", Math.min(1, dt * (2.6 + skill * 2.2) * 12))) return;
+      if (me.cd === 0 && aiTryAttack(me, foe, me.crouch > 0 ? "crouch" : "ground", "pressure", 1)) return;
+      const wantLauncher = distance < 215 && Math.random() < .14 + skill * .22;
+      if (aiTryAttack(me, foe, me.crouch > 0 ? "crouch" : "ground", wantLauncher ? "launcher" : "special", Math.min(1, dt * (3.4 + skill * 2.8) * 12))) return;
+      // Jump in for a cross-up or overhead if not already airborne.
+      if (me.jumpCd === 0 && distance > 190 && distance < 400 && Math.random() < dt * (1.8 + skill * 2.0)) { startJump(me, true); return; }
       // Mix in a low so blocking high is not free.
-      if (me.cd === 0 && distance < 200 && Math.random() < dt * 1.6) { me.crouch = .3; return; }
-      aiWalk(me, foe.x - me.dir * 118, 300);
+      if (me.cd === 0 && distance < 200 && Math.random() < dt * 2.8) { me.crouch = .3; return; }
+      aiWalk(me, foe.x - me.dir * aiEngageGap(me, "pressure"), 320);
       return;
     }
     default: {
-      const wanted = foe.x - me.dir * profile.idealGap;
-      if (Math.abs(me.x - wanted) > 40) aiWalk(me, wanted, 190);
+      const wanted = foe.x - me.dir * aiEngageGap(me, "neutral");
+      const needsToClose = (wanted - me.x) * me.dir > 50;
+      const tooClose = distance < aiEngageGap(me, "neutral") - 35;
+      // Dynamic footsies: jump, dash in, or backdash before settling into an attack.
+      if (me.grounded && me.jumpCd === 0 && Math.random() < dt * (0.18 + skill * 0.12)) {
+        startJump(me, needsToClose); return;
+      }
+      if (needsToClose && me.grounded && me.backdash === 0 && Math.random() < dt * (2.2 + skill * 1.2)) {
+        me.running = true; me.vx = me.dir * (320 + skill * 70); me.pose = "run"; return;
+      }
+      if (tooClose && me.grounded && me.backdash === 0 && !inCorner(me) && Math.random() < dt * (0.9 + skill * 0.6)) {
+        me.backdash = .36; me.dodge = .24; me.vx = -me.dir * (280 + skill * 70); me.pose = "evade";
+        playSfx("airBackdash", { pan: panFromX(me.x), volume: .32 }); return;
+      }
+      // Agile fighters (speed 4-5) do cat-like feints: dash in briefly, then spring back.
+      const isAgile = (me.agility || 1) >= 1.04;
+      if (isAgile && needsToClose && me.grounded && me.backdash === 0 && !me.ai.feintTimer && Math.random() < dt * (1.6 + skill * 1.0)) {
+        me.ai.feintTimer = 0.08 + Math.random() * 0.07;
+        me.running = true; me.vx = me.dir * (340 + skill * 90); me.pose = "run"; return;
+      }
+      if (me.ai.feintTimer !== undefined) {
+        me.ai.feintTimer -= dt;
+        if (me.ai.feintTimer <= 0) {
+          delete me.ai.feintTimer;
+          if (!inCorner(me)) { me.backdash = .28; me.dodge = .18; me.vx = -me.dir * (260 + skill * 60); me.pose = "evade"; playSfx("airBackdash", { pan: panFromX(me.x), volume: .26 }); return; }
+        } else { me.running = true; me.vx = me.dir * (340 + skill * 90); me.pose = "run"; return; }
+      }
+      if (Math.abs(me.x - wanted) > 40) aiWalk(me, wanted, 230);
       else { me.running = false; me.vx *= .84; me.pose = Math.random() < dt * .8 ? "crouch" : "idle"; if (me.pose === "crouch") me.crouch = .25; }
-      if (me.cd === 0 && distance < 240 && Math.random() < dt * (.7 + skill * .8)) aiTryAttack(me, foe, "ground", "special", 1);
+      if (me.cd === 0 && distance < 270 && Math.random() < dt * (2.6 + skill * 1.8)) aiTryAttack(me, foe, "ground", "pressure", 1);
     }
   }
 }
@@ -1537,8 +1887,12 @@ function isGun(move) { return move?.type === "gun" || move?.behavior?.motion ===
 function isWallSlam(move) { return move?.behavior?.motion === "wall-slam" || /wall ?slam|wall ?punch|wall ?bang|slam.*wall|into the wall/i.test(move?.name || ""); }
 function isSpin(move) { return move?.behavior?.motion === "spin" || /spin|whirl|cyclone|tornado|twister|carousel|helicopter/i.test(move?.name || ""); }
 function isMultiUppercut(move) { return move?.behavior?.motion === "multi-uppercut" || /shoryu|rising (fist|dragon|fury)|multi.?upper|triple.?upper|upper.*rush/i.test(move?.name || ""); }
+// Rising attacks are launcher-adjacent: they lift both fighters, but their
+// defining reward is an early air-cancel rather than a long grounded recovery.
+function isRisingAttack(move) { return isMultiUppercut(move) || /rising|uppercut|dragon|lift|sky|anti.?air/i.test(String(move?.name || "")); }
 function isFlyIn(move) { return move?.behavior?.motion === "fly-in" || /fly.?in|soar|swoop|comet|rocket (rush|charge)|air ?rush/i.test(move?.name || ""); }
 function isGroundPound(move) { return move?.behavior?.motion === "ground-pound" || /ground ?pound|earth ?shaker|seismic|meteor ?slam|body ?splash|shockwave slam/i.test(move?.name || ""); }
+function isSlide(move) { return move?.behavior?.motion === "slide" || /\bslide\b|skid|low.?dash|ground.?rush|slide.?kick/i.test(move?.name || ""); }
 
 // Every repeating-hit move funnels through one description so spins, rising
 // uppercuts, fly-ins and jab barrages all share the same proven cadence code.
@@ -1567,6 +1921,14 @@ function moveHitRange(move, variant = "ground") {
   const authored = moveReach(move, variant) + 28, imageReach = 44 + (Number(move?.visual?.size) || 58) * 1.45;
   return Math.max(authored, imageReach) + (variant === "air" ? 10 : 0);
 }
+// The target is a body, not a point. AI range checks need to include most of
+// that body width or they stop just outside attacks that would visibly connect.
+// Leave a tiny safety inset so a moving opponent does not turn every opener
+// into a whiff at the extreme edge.
+function moveDecisionRange(move, variant = "ground") {
+  if (isRanged(move)) return moveReach(move, variant);
+  return moveHitRange(move, variant) + (variant === "air" ? 28 : 34);
+}
 function meleeHitboxConnects(me, foe, state) {
   if (state.hitMode === "shockwave") return false; // resolved on landing instead
   const horizontal = (foe.x - me.x) * me.dir;
@@ -1575,7 +1937,7 @@ function meleeHitboxConnects(me, foe, state) {
   const targetHalfWidth = foe.grounded ? 42 : 36;
   const range = (state.hitRange || state.reach + 52 + (state.variant === "air" ? 16 : 0)) + targetHalfWidth;
   const vertical = Math.abs(foe.y - me.y);
-  const verticalWindow = state.diveKick ? 260 : state.variant === "air" ? 150 : state.variant === "crouch" ? 112 : 122;
+  const verticalWindow = state.diveKick ? 260 : state.variant === "air" ? (foe.juggle > 0 ? 195 : 150) : state.variant === "crouch" ? 112 : 122;
   const diveIsCommitted = !state.diveKick || me.vy > -180 || state.t > state.startup / 60;
   if (state.hitMode === "omni") {
     // A spin has no front: it connects on either side of the attacker.
@@ -1597,9 +1959,14 @@ function canHitDowned(me, foe, state) {
 
 function scoreMove(move, context) {
   const { me, foe, distance, variant, intent, vertical } = context;
-  const reach = moveHitRange(move, variant), frames = moveFrames(move, variant);
+  const reach = moveDecisionRange(move, variant), frames = moveFrames(move, variant);
   const ranged = isRanged(move), gun = isGun(move);
   let score = Math.random() * 9 - frames.startup * .2;
+  const moveKey = String(move.name || "").trim().toLowerCase();
+  const aiProfile = me.ai?.profile || {};
+  const category = moveCategory(move), weight = moveWeight(move);
+  if (aiProfile.preferredMoves?.includes(moveKey)) score += 13;
+  if (aiProfile.avoidMoves?.includes(moveKey)) score -= 22;
 
   // Spacing: the single biggest factor in whether a button is the right button.
   if (ranged) score += distance > 230 ? 16 : distance > 150 ? 2 : -14;
@@ -1610,6 +1977,31 @@ function scoreMove(move, context) {
   const punishRisk = frames.startup * .35 + frames.endlag * .12;
   if (distance > reach + 40) score -= punishRisk * .5;
   if (foe.hurt > 0 || foe.down || foe.guardBroken > 0) score += frames.startup < 10 ? 8 : 2;
+
+  // A move's type says what it is; intent says why it should be used now.
+  // The old pilot mostly ignored that distinction, which made generated
+  // fighters spend their signature tools like ordinary jabs. These small
+  // bonuses make the same kit read as an opener, poke, punish, or finisher.
+  if (intent === "pressure" || intent === "chain") {
+    if (!ranged && frames.startup <= 8) score += 8;
+    if (category === "normal") score += 5;
+    if (frames.endlag <= 14) score += 4;
+    if (weight >= 3 && intent === "pressure") score -= 5;
+    // Generated fighters need to demonstrate the kit they were forged with,
+    // not limp along on the universal normals while Kung Fu Man cashes out
+    // with his authored specials. Fast signature buttons are now real opens.
+    if (!me.fighter.example && category === "special" && frames.startup <= 15) score += 10;
+  }
+  if (intent === "special") {
+    if (category === "special" || ranged || move.type === "combo") score += 14;
+    if (frames.startup > 18 && !foe.hurt && !foe.down) score -= 7;
+    if (me.ai?.archetype === "grappler" && isGrapple(move) && distance < 165) score += 20;
+  }
+  if (intent === "punish" || intent === "whiff-punish") {
+    score += weight * 4 + Math.max(0, 15 - frames.startup) * .7;
+    if (frames.endlag > 30 && !foe.hurt && !foe.down) score -= 6;
+  }
+  if (intent === "launcher" && (isLauncher(move) || isRisingAttack(move))) score += 8;
 
   // Move-type situational fit.
   if (gun) score += distance > 260 ? 20 : distance > 170 ? 6 : -16;
@@ -1635,7 +2027,7 @@ function scoreMove(move, context) {
 
   // Anti-air: catch them out of the sky.
   if (!foe.grounded) {
-    if (isLauncher(move) || isMultiUppercut(move)) score += 16;
+    if (isLauncher(move) || isMultiUppercut(move)) score += 16 * (aiProfile.antiAir || 1);
     if (ranged && !gun) score -= 8;
     if (isGrapple(move)) score -= 30;
   }
@@ -1650,18 +2042,23 @@ function scoreMove(move, context) {
   }
 
   // Intent overrides.
-  if (intent === "launcher") score += isLauncher(move) ? 26 : -10;
+  if (intent === "launcher") score += isLauncher(move) ? 26 : isRisingAttack(move) ? 22 : -10;
   if (intent === "chain") score += isLauncher(move) ? 7 : 5;
   if (intent === "anti-guard") score += isGrapple(move) ? 30 : isOverhead(move, variant) || isLowHit(move, variant) ? 14 : -8;
   if (intent === "zone") score += ranged ? 18 : -12;
-  if (intent === "air-combo" && isAirComboMove(move)) score += 12;
+  if (intent === "air-combo" && isAirComboMove(move)) {
+    score += 12;
+    // As the target nears the floor, favour a decisive air ender rather than
+    // another light tap that leaves both fighters falling past each other.
+    if (foe.y > 430 && foe.vy > 80) score += isDiveKick(move) || move.variant === "heavy" || move.behavior?.knockback?.groundBounce === true ? 24 : -5;
+  }
 
   if (vertical > 150 && !ranged && variant !== "air") score -= 12;
   if (me.ai?.lastMoveKey === `${move.type}:${move.name}`) score -= 9;
   return score;
 }
 
-function chooseMove(me, foe, variant = "ground", intent = "neutral") {
+function rankMoves(me, foe, variant = "ground", intent = "neutral") {
   const moves = combatMoves(me), distance = Math.abs(foe.x - me.x), vertical = Math.abs(foe.y - me.y);
   let pool = moves;
   if (variant === "air") pool = airComboMoves(moves);
@@ -1671,16 +2068,28 @@ function chooseMove(me, foe, variant = "ground", intent = "neutral") {
   }
   if (!pool.length) pool = moves;
   const context = { me, foe, distance, variant, intent, vertical };
-  const scored = pool.map(move => ({ move, score: scoreMove(move, context) })).sort((a, b) => b.score - a.score);
-  if (!scored.length) return moves[0];
-  // Pick from a short list so a fighter has a favourite answer without becoming
-  // perfectly predictable.
-  const shortlist = scored.slice(0, Math.min(3, scored.length));
-  return shortlist[Math.floor(Math.random() * shortlist.length)]?.move || moves[0];
+  return pool.map(move => ({ move, score: scoreMove(move, context) })).sort((a, b) => b.score - a.score);
+}
+function pickRankedMove(scored, fallback = null) {
+  if (!scored.length) return fallback;
+  // Keep variety between comparable tools, but do not randomly throw a move
+  // that just scored far worse for the current spacing. This especially helps
+  // bespoke kits whose individual moves are more specialised than Kung Fu
+  // Man's all-purpose defaults.
+  const best = scored[0].score;
+  const shortlist = scored.filter(entry => entry.score >= best - 7).slice(0, 3);
+  const total = shortlist.reduce((sum, entry) => sum + Math.max(1, entry.score - best + 8), 0);
+  let roll = Math.random() * total;
+  for (const entry of shortlist) { roll -= Math.max(1, entry.score - best + 8); if (roll <= 0) return entry.move; }
+  return shortlist[0]?.move || fallback;
+}
+function chooseMove(me, foe, variant = "ground", intent = "neutral") {
+  const moves = combatMoves(me);
+  return pickRankedMove(rankMoves(me, foe, variant, intent), moves[0]);
 }
 function startJump(me, running=false, target=null) {
   if (!me.grounded || me.jumpCd > 0 || me.attackState || me.blocking) return false;
-  me.grounded=false; me.blocking=false; me.crouch=0; me.runJump=running; me.running=false;
+  me.grounded=false; me.blocking=false; me.crouch=0; me.runJump=running; me.running=false; me.airDash=0; me.airDashUsed=false;
   if (target) {
     me.dir = target.x >= me.x ? 1 : -1;
     // Match the launched opponent's vertical arc instead of using a fixed
@@ -1693,6 +2102,15 @@ function startJump(me, running=false, target=null) {
   }
   me.jumpCd=.9; me.pose=running ? "run-jump" : "jump";
   playSfx(running ? "jumpRun" : "jumpHigh", { pan: panFromX(me.x), volume: .4, cooldown: .1 });
+  return true;
+}
+function startAirDash(me, direction = me.dir) {
+  if (me.grounded || me.airDashUsed || me.attackState || me.hurt > 0 || me.recovery || me.grappledBy || me.down) return false;
+  const dashDir = Math.sign(direction) || me.dir || 1;
+  me.airDashUsed = true; me.airDash = RULES.airDashDuration; me.airDashDir = dashDir;
+  me.vx = dashDir * RULES.airDashSpeed; me.vy *= .32; me.running = false; me.pose = "air-dash";
+  me.trail.push({ t:.24, x:me.x - dashDir * 26, y:me.y - 58 });
+  playSfx(dashDir === me.dir ? "airDash" : "airBackdash", { pan: panFromX(me.x), volume: .48, cooldown: .12 });
   return true;
 }
 // Guard push. Spend meter mid-blockstun to blow the attacker back out of
@@ -1738,19 +2156,24 @@ function startRecovery(me, foe) {
   // who just started. Each hit halves the remaining chance past hit 2.
   const juggleDepth = me.airComboHits || 0;
   const depthPenalty = juggleDepth > 2 ? Math.pow(.62, juggleDepth - 2) : 1;
-  const baseChance = airborne ? .20 : .26;
-  if (Math.random() > baseChance * depthPenalty) return false;
+  const baseChance = airborne ? .30 : .34;
+  // One roll per hit sequence. This must happen after the launcher gate above:
+  // a victim who is not eligible yet should still get their chance later.
   me.recoveryAttempted = true;
-  me.recovery = { type: airborne ? "air-hop" : "backflip", t: 0, duration: airborne ? .28 : .42 };
-  // Reduced invuln: tech gives a small window to reorient, not immunity.
-  me.invuln = airborne ? .08 : .10;
+  if (Math.random() > baseChance * depthPenalty) return false;
+  me.recovery = { type: airborne ? "air-hop" : "backflip", t: 0, duration: airborne ? .32 : .46 };
+  // A tech must actually end the combo. The former .12-second protection
+  // expired in the middle of the recovery animation, which let an attacker
+  // immediately re-stunlock the fighter before they could move or block.
+  me.invuln = me.recovery.duration + .16;
   me.recoveryCooldown = airborne ? .8 : .95;
   me.hurt = 0; me.hitstunFrames = 0; me.attackState = null; me.attack = 0; me.blocking = false; me.blockTimer = 0; me.crouch = 0; me.running = false;
   me.juggle = 0; me.airComboHits = 0; me.airComboTarget = null; me.airComboTimer = 0; me.airComboJumpQueued = false; me.pendingKnockdown = 0; me.juggleGravity = 1; resetCombo(me);
-  // Smaller escape velocity so the attacker can realistically give chase.
-  me.dir = foe.x >= me.x ? 1 : -1; me.vx = -me.dir * (airborne ? 95 : 180);
-  if (airborne) { me.vy = -220; me.y -= 4; me.pose = "recover-air"; }
-  else { me.grounded = false; me.vy = -380; me.y = Math.max(420, me.y - 2); me.pose = "recover-ground"; }
+  // Put a real gap on the screen as well as granting invulnerability. The
+  // attacker must chase the tech instead of continuing from point-blank.
+  me.dir = foe.x >= me.x ? 1 : -1; me.vx = -me.dir * (airborne ? 360 : 390);
+  if (airborne) { me.vy = -285; me.y -= 8; me.pose = "recover-air"; }
+  else { me.grounded = false; me.vy = -430; me.y = Math.max(410, me.y - 4); me.pose = "recover-ground"; }
   // The attacker's COMBO counter resets (victim escaped) but their positional
   // plan is kept — they were in range and can immediately re-pressure or
   // tech-chase. Wiping the full comboPlan rewarded the escape too much.
@@ -1762,7 +2185,9 @@ function startRecovery(me, foe) {
     attacker.comboPlan = null; attacker.comboStep = 0;
   }
   playSfx("recover", { pan: panFromX(me.x), volume: .7 });
-  me.effects.push({ kind: "recovery", t: me.recovery.duration, x: me.x, y: me.y, color: me.fighter.config?.color || "#d8ff3e", size: airborne ? 38 : 50 });
+  me.techTimer = me.recovery.duration;
+  me.effects.push({ kind: "tech", t: me.recovery.duration, x: me.x, y: me.y, color: me.fighter.config?.color || "#d8ff3e", size: airborne ? 42 : 54 });
+  showBanner(airborne ? "AIR TECH" : "TECH", .42, "tech");
   return true;
 }
 // Pick the swing/cast sound that matches what this move physically is, so a
@@ -1828,13 +2253,13 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
   const name = move.name || (projectile ? "Spark Shot" : "Strike");
   const chainName = chainStep ? ` ${["II","III","IV","FINISH"][Math.min(chainStep-1,3)]}` : "";
   const label = `${superMove ? "SUPER " : exMove ? "EX " : ""}${variant === "air" ? "AIR " : variant === "crouch" ? "LOW " : ""}${name}${rapidJab ? ` ×${rapidHits}` : ""}${chainName}`.toUpperCase();
-  const spin = isSpin(move), multiUppercut = isMultiUppercut(move), flyIn = isFlyIn(move), groundPound = isGroundPound(move), wallSlam = isWallSlam(move), gun = isGun(move);
+  const spin = isSpin(move), multiUppercut = isMultiUppercut(move), risingAttack = isRisingAttack(move), flyIn = isFlyIn(move), groundPound = isGroundPound(move), wallSlam = isWallSlam(move), gun = isGun(move), slide = isSlide(move);
   const launcher = (variant === "ground" || multiUppercut) && isLauncher(move);
   const diveKick = variant === "air" && isDiveKick(move);
   const powerMultiplier = superMove ? 2.35 : exMove ? 1.45 : 1;
   // Spin hits all around the attacker; a ground pound hits by shockwave radius.
   const hitMode = spin ? "omni" : groundPound ? "shockwave" : "normal";
-  me.attackState = { foe, move, isFollowUp:Boolean(mods.followUp), visual:move.visual, superMove, exMove, powerMultiplier, multiKind, spin, multiUppercut, flyIn, groundPound, wallSlam, gun, hitMode, flyTravelled:0, shockDone:false, behavior:move.behavior, animation:move.animation, variant, projectile, bomb, charge, grapple, teleport, pillar, freeze, launcher, diveKick, rapidJab, rapidHits, rapidInterval, rapidHitCount:0, nextRapidHitAt:0, dashAttack:isDashAttack(move), comboPlanId:me.comboPlan?.target === foe ? me.comboPlan.id : null, comboStep, linkRetryCount:0, hitConfirmed:false, duration, startup:variantStartup, active, endlag:variantEndlag, hitstun:variantHitstun, totalFrames, t:0, hitAt:variantStartup / 60, finishAt:(variantStartup + Math.max(5, Math.round(active * .62))) / 60, resolved:false, behaviorApplied:false, finished:false, grabbed:false, grapplePhase:"reach", reach:moveReach(move, variant), hitRange:moveHitRange(move, variant), damage:(baseDamage + movePower + variantBonus + Math.min(chainStep,3)*1.6) * (charge ? clampNumber(move.behavior?.chargePower, .7, 2.5, 1.35) : 1) * powerMultiplier, label };
+  me.attackState = { foe, move, isFollowUp:Boolean(mods.followUp), airFinisher:Boolean(mods.airFinisher), visual:move.visual, superMove, exMove, powerMultiplier, multiKind, spin, multiUppercut, risingAttack, flyIn, groundPound, wallSlam, gun, slide, hitMode, flyTravelled:0, shockDone:false, behavior:move.behavior, animation:move.animation, variant, projectile, bomb, charge, grapple, teleport, pillar, freeze, launcher, diveKick, rapidJab, rapidHits, rapidInterval, rapidHitCount:0, nextRapidHitAt:0, dashAttack:isDashAttack(move), comboPlanId:me.comboPlan?.target === foe ? me.comboPlan.id : null, comboStep, linkRetryCount:0, hitConfirmed:false, duration, startup:variantStartup, active, endlag:variantEndlag, hitstun:variantHitstun, totalFrames, t:0, hitAt:variantStartup / 60, finishAt:(variantStartup + Math.max(5, Math.round(active * .62))) / 60, resolved:false, behaviorApplied:false, finished:false, grabbed:false, grapplePhase:"reach", reach:moveReach(move, variant) * (me.reachMult || 1), hitRange:moveHitRange(move, variant) * (me.reachMult || 1), damage:(baseDamage + movePower + variantBonus + Math.min(chainStep,3)*1.6) * (charge ? clampNumber(move.behavior?.chargePower, .7, 2.5, 1.35) : 1) * powerMultiplier, label };
   if (superMove) {
     // Freeze the screen on the flash so the announcement lands before the
     // move actually moves. Startup is invulnerable, which is the whole
@@ -1843,6 +2268,7 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
     addHitstop(.24); addShake(.3); camera.focus = me;
   } else if (exMove) { me.superFlash = .25; addShake(.1); }
   playSfx(swingSoundFor(move, variant), { pan: panFromX(me.x), volume: superMove ? .9 : .55, cooldown: rapidJab ? .06 : 0 });
+  if (move.visual?.soundUrl) playUploadedSfx(move.visual.soundUrl, { pan: panFromX(me.x), volume: superMove ? .95 : .72, cooldown: rapidJab ? .06 : .02 });
   if (superMove) playSfx("superStart", { volume: .85 });
   else if (exMove) playSfx("exFlourish", { volume: .7 });
   showMoveCallout(me, me.attackState);
@@ -1867,6 +2293,11 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
     me.vx = me.dir * clampNumber(move.behavior?.speed, 220, 520, 360);
     me.vy = Math.max(460, me.vy);
   }
+  if (slide) {
+    // Stay crouched for the entire move and shoot forward along the floor.
+    me.crouch = state.duration + 0.08;
+    me.vx = me.dir * clampNumber(move.behavior?.slideSpeed ?? move.behavior?.speed, 180, 560, 360);
+  }
 }
 function updateAttack(me, foe, dt) {
   const state = me.attackState; if (!state) return;
@@ -1879,6 +2310,12 @@ function updateAttack(me, foe, dt) {
     state.flyTravelled += Math.abs(step);
     me.vx = me.dir * clampNumber(state.behavior?.flySpeed, 320, 1100, 620);
     me.vy = Math.min(me.vy, 40);
+  }
+  if (state.slide && state.t < state.finishAt) {
+    // Decelerate through the slide and keep crouching until it ends.
+    const slideSpd = clampNumber(state.behavior?.slideSpeed ?? state.behavior?.speed, 180, 560, 360);
+    me.vx = me.dir * slideSpd * Math.max(0.1, 1 - (state.t / state.duration) * 1.15);
+    me.crouch = Math.max(me.crouch, (state.duration - state.t) + 0.06);
   }
   if (state.groundPound) {
     if (!me.grounded && state.t >= state.startup / 60) me.vy = Math.max(me.vy, clampNumber(state.behavior?.slamSpeed, 480, 1600, 980));
@@ -1917,18 +2354,33 @@ function updateAttack(me, foe, dt) {
       if (!state.rapidJab) state.resolved = true;
       if (state.grapple) state.hitConfirmed = attemptGrapple(me, foe, state) || state.hitConfirmed;
       else state.hitConfirmed = (hit(me, foe, state.damage, state.label, state.hitstun, state.launcher, state.variant, state.visual) !== false) || state.hitConfirmed;
-      if (state.multiUppercut && state.hitConfirmed) {
-        // Every hit of a rising uppercut lifts both fighters a little further.
+      if (state.risingAttack && state.hitConfirmed) {
+        // Every hit of a rising attack lifts both fighters. Unlike a hard
+        // launcher, the attacker is released almost immediately so an air
+        // normal can be canceled during the ascent instead of waiting through
+        // the move's full endlag.
         const rise = clampNumber(state.behavior?.rise, 120, 620, 300);
         if (me.grounded) { me.grounded = false; me.y -= 4; }
         me.vy = Math.min(me.vy, -rise * .78);
         foe.grounded = false; foe.vy = Math.min(foe.vy, -rise);
         foe.juggle = Math.max(foe.juggle, 4);
+        state.resolved = true;
+        state.duration = Math.min(state.duration, state.t + .075);
+        me.cd = 0;
       }
       if (state.rapidJab) {
         state.rapidHitCount += 1;
         state.nextRapidHitAt = state.t + state.rapidInterval;
         if (state.rapidHitCount >= state.rapidHits) state.resolved = true;
+      }
+      // A planned cancel has to remove the preceding move's endlag. Without
+      // this, sparse forged kits technically planned two buttons but waited
+      // until the defender had already recovered before throwing the second.
+      const plannedNext = state.comboPlanId && me.comboPlan?.id === state.comboPlanId
+        ? me.comboPlan.steps[(state.comboStep ?? -1) + 1] : null;
+      if (state.hitConfirmed && plannedNext?.cancel) {
+        state.duration = Math.min(state.duration, activeEnd + .018);
+        me.cd = 0;
       }
       if (state.diveKick && state.hitConfirmed && !state.diveBounced) {
         state.diveBounced = true;
@@ -2080,8 +2532,12 @@ function spawnProjectile(me,foe,state) {
     const targetX = (trap || pillar) ? me.x + me.dir * Math.min(Math.abs(foe.x - me.x), state.reach * .72) : me.x + me.dir * 42;
     const spawnX = pattern === "rain" ? foe.x + offset * 1.4 : targetX, spawnY = pillar ? me.y - 5 : bomb ? me.y - 24 : pattern === "rain" ? me.y - 300 : me.y - 82 + offset;
     const targetY = foe.y - 88, aimAngle = pattern === "rain" ? Math.PI / 2 : Math.atan2(targetY - spawnY, foe.x - spawnX), shotAngle = pattern === "fan" ? aimAngle + (i - (shots - 1) / 2) * Number(behavior.spread || 22) * Math.PI / 180 : aimAngle;
+    const angleOffsetRad = (Number(behavior.angleOffset) || 0) * Math.PI / 180;
+    const finalAngle = behavior.angleMode === "fixed"
+      ? (me.dir > 0 ? angleOffsetRad : Math.PI - angleOffsetRad)
+      : shotAngle + angleOffsetRad;
     const gunShot = state.gun || state.move.type === "gun";
-    const speed = gunShot ? clampNumber(behavior.speed, 700, 1600, 1150) : clampNumber(behavior.speed, 160, 700, 390), p = { x:spawnX, y:spawnY, originX:spawnX, originY:spawnY, phase:i * Math.PI / Math.max(1, shots), vx:(hazard && !bomb) || pattern === "rain" || pattern === "orbit" ? 0 : Math.cos(shotAngle) * speed, vy:(hazard && !bomb) ? 0 : pattern === "rain" ? speed : Math.sin(shotAngle) * speed, age:0, pattern, gravity:clampNumber(behavior.gravity, -1600, 1600, pattern === "arc" ? 520 : 0), homing:clampNumber(behavior.homing, 0, 1, 0), bounces:Math.round(clampNumber(behavior.bounces, 0, 3, 0)), orbitRadius:clampNumber(behavior.orbitRadius, 24, 220, 84), orbitSpeed:clampNumber(behavior.orbitSpeed, -12, 12, 3.5), returnDelay:clampNumber(behavior.returnDelay, .15, 1.5, .62), returning:false, owner:me, life:bomb ? behavior.fuse + .08 : hazard ? behavior.lifetime : gunShot ? 1.1 : 1.45, armed:bomb ? behavior.fuse : gunShot ? .04 : .18, radius:clampNumber(behavior.radius, 8, 140, pillar ? 76 : trap ? 68 : bomb ? 78 : gunShot ? 13 : 22), trap, pillar, bomb, gun:gunShot, exploding:false, fuse:behavior.fuse, element:behavior.element || visual.element || "energy", visual, target:foe, damage:state.damage, hitstun:state.hitstun, freezeTime:behavior.freeze, status:behavior.status, knockback:behavior.knockback, label:state.label };
+    const speed = gunShot ? clampNumber(behavior.speed, 700, 1600, 1150) : clampNumber(behavior.speed, 160, 700, 390), p = { x:spawnX, y:spawnY, originX:spawnX, originY:spawnY, phase:i * Math.PI / Math.max(1, shots), vx:(hazard && !bomb) || pattern === "rain" || pattern === "orbit" ? 0 : Math.cos(finalAngle) * speed, vy:(hazard && !bomb) ? 0 : pattern === "rain" ? speed : Math.sin(finalAngle) * speed, age:0, pattern, gravity:clampNumber(behavior.gravity, -1600, 1600, pattern === "arc" ? 520 : 0), homing:clampNumber(behavior.homing, 0, 1, 0), bounces:Math.round(clampNumber(behavior.bounces, 0, 3, 0)), orbitRadius:clampNumber(behavior.orbitRadius, 24, 220, 84), orbitSpeed:clampNumber(behavior.orbitSpeed, -12, 12, 3.5), returnDelay:clampNumber(behavior.returnDelay, .15, 1.5, .62), returning:false, owner:me, life:behavior.linger ? Math.max(1.5, Math.min(8, Number(behavior.linger))) : bomb ? behavior.fuse + .08 : hazard ? behavior.lifetime : gunShot ? 1.1 : 1.45, armed:bomb ? behavior.fuse : gunShot ? .04 : .18, radius:clampNumber(behavior.radius, 8, 140, pillar ? 76 : trap ? 68 : bomb ? 78 : gunShot ? 13 : 22), trap, pillar, bomb, gun:gunShot, exploding:false, fuse:behavior.fuse, element:behavior.element || visual.element || "energy", visual, target:foe, damage:state.damage, hitstun:state.hitstun, freezeTime:behavior.freeze, status:behavior.status, knockback:behavior.knockback, label:state.label, pierce:Boolean(behavior.pierce), hitImmunity:clampNumber(behavior.hitImmunity, .08, 1.5, .35), hitCooldown:0, wallBounce:Boolean(behavior.wallBounce) };
     if (gunShot) me.effects.push({ kind: "impact", t: .16, x: me.x + me.dir * 52, y: me.y, color: visual?.secondary || "#fff2c2", size: 30, vfxId: "hit_round_spark" });
     (battle.projectiles ||= []).push(p);
   }
@@ -2137,6 +2593,10 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   const counter = Boolean(foe.attackState) && foe.attackState.t < foe.attackState.startup / 60;
   const continuing = me.combo.timer > 0 && me.combo.target === foe;
   const wasGrounded = foe.grounded;
+  // A clean hit interrupts whatever the defender was doing. Leaving the old
+  // attack state alive made struck fighters keep animating and acting through
+  // hitstun, which hid both the hit reaction and the tech window.
+  if (foe.attackState && !foe.attackState.grappled) { foe.attackState = null; foe.attack = 0; }
   if (!continuing) { me.combo.scale = 1; me.combo.damage = 0; }
   me.combo.count = continuing ? me.combo.count + 1 : 1; me.combo.target = foe;
   me.combo.timer = .72 + (Number(me.fighter.config?.combo) || 2) * .055;
@@ -2154,7 +2614,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   const appliedHitstun = Math.round(hitstun * (counter ? RULES.counterHitstun : 1));
   foe.hp = Math.max(0, foe.hp - finalDamage);
   foe.damageTaken = (foe.damageTaken || 0) + finalDamage;
-  foe.hitstunFrames = appliedHitstun; foe.hurt = appliedHitstun / 60;
+  foe.hitstunFrames = appliedHitstun; foe.hurt = appliedHitstun / 60; foe.hitDirection = me.dir;
   // Only grant a fresh recovery window on the FIRST hit of a sequence. Once a
   // recovery attempt has been made or denied, the attacker has earned the
   // rest of the combo — resetting this flag on every hit lets a 12-hit string
@@ -2181,12 +2641,21 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   foe.vx = direction * horizontal;
   if (knockback.direction === "down") vertical = -vertical;
   if (Math.abs(vertical) >= 80) { foe.grounded = false; foe.vy = -vertical; }
-  if (knockback.groundBounce && wasGrounded) { foe.grounded = false; foe.vy = -Math.max(360, vertical); }
   // A heavy hit from the air spikes them into the floor. The bounce that comes
   // back up is the attacker's reward: a fresh juggle to keep the route going.
-  const spikes = knockback.groundBounce === true || state?.diveKick || state?.groundPound
+  const spikes = knockback.groundBounce === true || state?.diveKick || state?.groundPound || state?.airFinisher
     || (attackVariant === "air" && (String(move?.variant || "") === "heavy" || finalDamage > 12));
-  if (spikes && !foe.grounded && !foe.bounceUsed) foe.groundBouncePending = 1;
+  if (spikes && !foe.bounceUsed) {
+    // A ground bounce must travel into the floor before it rebounds. The old
+    // path launched the victim upward first, so the banner said BOUNCE while
+    // the body never visibly hit the ground.
+    foe.grounded = false;
+    foe.y = Math.min(RULES.floorY - 18, foe.y);
+    foe.vy = Math.max(500, Math.abs(vertical) * .9, Math.abs(foe.vy));
+    foe.groundBouncePending = 1;
+    foe.pendingKnockdown = 0;
+    foe.pose = "spiked";
+  }
 
   // Picking a downed opponent up with a low: they pop back into the air and the
   // combo continues, once per knockdown.
@@ -2263,6 +2732,13 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
     foe.juggle = Math.max(RULES.juggleBudget, Math.min(72, (Number(move?.juggle) || 4) * 6));
     me.airComboTarget = foe; me.airComboTimer = 2.9; me.airComboJumpQueued = true; me.combo.timer = Math.max(me.combo.timer, 1.25);
     foe.pendingKnockdown = RULES.hardKnockdown;
+  } else if (state?.risingAttack && wasGrounded) {
+    // Soft launchers use a lower pop and no hard-knockdown flag. Their reward
+    // is the air-cancel state established by the rising hit above.
+    foe.grounded = false; foe.runJump = false; foe.airComboHits = 0;
+    foe.juggle = Math.max(18, foe.juggle || 0); foe.juggleGravity = RULES.juggleStart;
+    me.airComboTarget = foe; me.airComboTimer = Math.max(me.airComboTimer, 2.35); me.airComboJumpQueued = false; me.combo.timer = Math.max(me.combo.timer, 1.05);
+    foe.pendingKnockdown = 0;
   } else if (attackVariant === "air" && !foe.grounded) {
     // Each air hit adds gravity, so juggles end on their own instead of
     // needing an arbitrary hit cap to stop them.
@@ -2334,7 +2810,7 @@ function updatePhysics(me, dt) {
     me.y += me.vy * dt;
     me.vy += RULES.gravity * (me.hurt > 0 ? (me.juggleGravity || 1) : 1) * dt;
     if (me.y >= RULES.floorY) {
-      me.y = RULES.floorY; me.vy = 0; me.grounded = true; me.runJump = false;
+      me.y = RULES.floorY; me.vy = 0; me.grounded = true; me.runJump = false; me.airDash = 0; me.airDashUsed = false;
       me.juggle = 0; me.airComboHits = 0; me.airComboTarget = null; me.airComboTimer = 0; me.airComboJumpQueued = false;
       const bouncing = me.groundBouncePending && me.hurt > 0 && !me.bounceUsed && me.guardBroken <= 0;
       if (!bouncing && (!me.pendingKnockdown || (me.hurt <= 0 && me.guardBroken <= 0))) playSfx("land", { pan: panFromX(me.x), volume: .3, cooldown: .08 });
@@ -2342,11 +2818,12 @@ function updatePhysics(me, dt) {
       if (bouncing) {
         // Spiked into the floor and popped back up. One per combo, so it reads
         // as a deliberate extender rather than an endless pinball.
-        me.bounceUsed = true; me.pendingKnockdown = 0;
+        me.bounceUsed = true; me.pendingKnockdown = 0; me.bounceTimer = .48;
         me.grounded = false; me.y = RULES.floorY - 6; me.vy = -RULES.groundBounceHeight; me.vx *= .45;
         me.juggle = Math.max(me.juggle, RULES.bounceJuggle); me.juggleGravity = RULES.juggleStart; me.airComboHits = 0;
         me.hurt = Math.max(me.hurt, .5); me.hitstunFrames = Math.max(me.hitstunFrames, 30);
-        me.effects.push({ kind: "impact", t: .42, x: me.x, y: RULES.floorY, color: "#ffffff", size: 86 });
+        me.pose = "ground-bounce";
+        me.effects.push({ kind: "bounce", t: .48, x: me.x, y: RULES.floorY, color: "#ffffff", size: 92 });
         const bouncer = me.lastAttacker;
         if (bouncer && bouncer.hp > 0) {
           bouncer.airComboTarget = me; bouncer.airComboTimer = Math.max(bouncer.airComboTimer, 2.5);
@@ -2444,13 +2921,17 @@ function updateProjectiles(dt) {
       if (bombHitboxConnects(p) || p.armed === 0) explodeBomb(p);
       return p.exploding || (p.life > 0 && p.x > 35 && p.x < 1245);
     }
+    p.hitCooldown = Math.max(0, (p.hitCooldown || 0) - dt);
     const close = projectileHitboxConnects(p, previousX);
-    if (p.armed === 0 && close) {
+    if (p.armed === 0 && close && p.hitCooldown === 0) {
       const connected = hit(p.owner, p.target, p.damage, p.label, p.hitstun, false, "ground", p.visual, p.knockback);
       if (connected !== false && p.status === "freeze") applyFreeze(p.target, p.freezeTime, p.visual);
-      return false;
+      if (!p.pierce) return false;
+      p.hitCooldown = p.hitImmunity || .35;
     }
-    return p.life > 0 && p.x > 35 && p.x < 1245;
+    const inBounds = p.x > 35 && p.x < 1245;
+    if (p.wallBounce && !inBounds) { p.vx = -p.vx; p.x = Math.max(36, Math.min(1244, p.x)); }
+    return p.life > 0 && (p.wallBounce || inBounds);
   });
 }
 function finishRound(winner, reason = "K.O.") {
@@ -2616,6 +3097,12 @@ function draw() {
   requestAnimationFrame(draw);
 }
 function drawCombatStateFx(f, blocking, running) {
+  if (f.airDash > 0) {
+    const localDir = (f.airDashDir || f.dir || 1) * (f.dir || 1);
+    ctx.save(); ctx.globalAlpha = Math.min(.8, f.airDash * 4.5); ctx.strokeStyle = f.fighter.config?.accent || "#8fe4ff"; ctx.lineWidth = 4;
+    for (let i = 0; i < 4; i++) { const y = -122 + i * 18, start = -localDir * (26 + i * 6), end = -localDir * (104 + i * 23); ctx.beginPath(); ctx.moveTo(start, y); ctx.lineTo(end, y - i * 4); ctx.stroke(); }
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
   if (running) { ctx.globalAlpha=.55; ctx.strokeStyle="#d8ff3e"; ctx.lineWidth=4; for (let i=0;i<2;i++) { ctx.beginPath(); ctx.moveTo(-55,-42+i*20); ctx.lineTo(-88,-42+i*20); ctx.stroke(); } ctx.globalAlpha=1; }
   if (blocking) {
     // The guard arc drains with the guard meter, so a fighter about to be
@@ -2637,6 +3124,14 @@ function drawCombatStateFx(f, blocking, running) {
   if (f.guardBroken > 0) {
     ctx.save(); ctx.globalAlpha = .8; ctx.strokeStyle = "#ffe66d"; ctx.lineWidth = 4; ctx.setLineDash([9, 6]);
     ctx.beginPath(); ctx.arc(0, -95, 66 + Math.sin(f.guardBroken * 26) * 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]); ctx.restore(); ctx.globalAlpha = 1;
+  }
+  if (f.techTimer > 0) {
+    const pulse = 1 + Math.sin((battle?.elapsed || 0) * 28) * .12;
+    ctx.save(); ctx.globalAlpha = Math.min(1, f.techTimer * 3.2); ctx.strokeStyle = "#bdf6ff"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, -92, 52 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([5, 5]); ctx.strokeStyle = f.fighter.config?.color || "#d8ff3e";
+    ctx.beginPath(); ctx.arc(0, -92, 68 / pulse, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]); ctx.restore(); ctx.globalAlpha = 1;
   }
 }
@@ -2694,6 +3189,29 @@ function animationTransform(f, state) {
       rotation = f.dir * Math.sin(hop) * .14; offsetY = -Math.sin(hop) * 10;
       scaleX = .86 + depth * .16; scaleY = 1.02 + (1 - depth) * .05; skewX = Math.sin(hop) * .14; skewY = -Math.sin(hop) * .06;
     }
+  }
+  else if (f.bounceTimer > 0) {
+    const progress = 1 - Math.min(1, f.bounceTimer / .48);
+    // The rebound folds the body into the floor, then opens it out as the
+    // launch carries them back up. It is deliberately different from ordinary
+    // air hitstun so a bounce is readable at a glance.
+    rotation = f.hitDirection * (.46 - progress * .22);
+    offsetY = 12 * (1 - progress);
+    scaleX = 1.13 - progress * .08;
+    scaleY = .82 + progress * .15;
+    skewX = f.hitDirection * .18 * (1 - progress);
+  }
+  else if (f.hurt > 0) {
+    const force = Math.min(1, f.hurt * 4.6);
+    const hitDirection = Math.sign(f.hitDirection || f.vx || -f.dir) || 1;
+    // Grounded hits recoil backward; airborne hits tumble and stretch along
+    // their launch path. This is the actual hurt pose, not only a white flash.
+    rotation = hitDirection * (f.grounded ? .16 : .31) * force;
+    offsetX = hitDirection * (f.grounded ? 11 : 17) * force;
+    offsetY = f.grounded ? 5 * force : -4 * force;
+    scaleX = 1 + .12 * force;
+    scaleY = 1 - .1 * force;
+    skewX = hitDirection * .12 * force;
   }
   else if (f.grappledBy) { rotation = f.grappledBy.dir * -.12; offsetX = f.grappledBy.dir * 7; offsetY = phase === "finish" ? 6 : -1; scaleX = .94; scaleY = 1.03; }
   else if (state?.diveKick || /dive/.test(String(a.gesture || "").toLowerCase())) { const diveProgress = state ? Math.min(1, state.t / Math.max(.001, state.duration)) : 0; rotation = -f.dir * (.28 + Math.sin(diveProgress * Math.PI) * .18) * intensity; offsetX = f.dir * 9 * intensity; offsetY = 14 * intensity; scaleX = 1.08; scaleY = .94; }
@@ -2987,7 +3505,7 @@ function drawProjectileVisual(p) {
   const v = p.visual || moveVisualDefaults.projectile, pulse = 1 + Math.sin((battle?.elapsed || 0) * 14) * .08, size = v.size * pulse;
   ctx.save(); ctx.translate(p.x, p.y); ctx.globalAlpha = p.trap ? Math.min(1, p.life * 2) : 1;
   if (!p.bomb || p.exploding) drawVfxAsset(v.mainVfx, (battle?.elapsed || 0) * (Number(v.vfxFps) || 18), 0, 0, Math.max(64, p.exploding ? size * 3.2 : size * 2.25), p.trap ? .7 : .9);
-  if (!p.trap && !p.pillar && !p.bomb && p.vx) { ctx.strokeStyle=v.color; ctx.globalAlpha=.22; ctx.lineWidth=Math.max(5,size*.55); ctx.beginPath();ctx.moveTo(p.vx>0?-size*2:size*2,0);ctx.lineTo(0,0);ctx.stroke();ctx.globalAlpha=1; }
+  if (!p.trap && !p.pillar && !p.bomb && (p.vx || p.vy)) { const velAngle=Math.atan2(p.vy||0,p.vx||0),spd=Math.hypot(p.vx||0,p.vy||0),trailLen=p.gun?Math.min(size*6,spd*.02+size*2.5):Math.min(size*3,spd*.010+size*1.5); ctx.strokeStyle=v.color;ctx.globalAlpha=p.gun?.38:.22;ctx.lineWidth=p.gun?Math.max(3,size*.32):Math.max(5,size*.55);ctx.beginPath();ctx.moveTo(-Math.cos(velAngle)*trailLen,-Math.sin(velAngle)*trailLen);ctx.lineTo(0,0);ctx.stroke(); if(p.gun){ctx.strokeStyle=v.secondary;ctx.globalAlpha=.65;ctx.lineWidth=Math.max(1,size*.14);ctx.beginPath();ctx.moveTo(-Math.cos(velAngle)*trailLen*.6,-Math.sin(velAngle)*trailLen*.6);ctx.lineTo(0,0);ctx.stroke();}ctx.globalAlpha=1; }
   if (!p.trap && !p.pillar && !p.bomb && p.pattern === "rain") { ctx.strokeStyle = v.secondary; ctx.globalAlpha = .34; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, -size * 2.4); ctx.lineTo(0, -size * .45); ctx.stroke(); ctx.globalAlpha = 1; }
   if (!p.trap && !p.pillar && !p.bomb && p.pattern === "orbit") { ctx.strokeStyle = v.secondary; ctx.globalAlpha = .32; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, p.orbitRadius, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
   if (!p.trap && !p.pillar && !p.bomb && p.pattern === "boomerang" && p.returning) { ctx.strokeStyle = v.color; ctx.globalAlpha = .3; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0, 0, size * 1.25, -.8, .8); ctx.stroke(); ctx.globalAlpha = 1; }
@@ -3023,6 +3541,18 @@ function drawImpactFx(f) {
       ctx.setLineDash([9, 6]); glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.1 - progress * .2), 0, Math.PI * 2); }, effect.color, 5, progress); ctx.setLineDash([]);
     } else if (effect.kind === "freeze") {
       glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.3 - progress * .2), 0, Math.PI * 2); }, effect.color, 5, progress);
+    } else if (effect.kind === "tech") {
+      const pulse = 1 + Math.sin((battle?.elapsed || 0) * 32) * .1;
+      ctx.setLineDash([7, 5]);
+      glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.2 - progress * .35) * pulse, 0, Math.PI * 2); }, "#bdf6ff", 4, Math.min(1, progress * 1.6));
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#f4fbff"; ctx.font = "900 15px 'Barlow Condensed',sans-serif"; ctx.textAlign = "center"; ctx.fillText("TECH", 0, -effect.size * .95);
+    } else if (effect.kind === "bounce") {
+      const spread = effect.size * (1.35 - progress * .45);
+      glowStroke(() => { ctx.beginPath(); ctx.ellipse(0, effect.size * .45, spread, effect.size * .28, 0, 0, Math.PI * 2); }, effect.color, 5, Math.min(1, progress * 1.8));
+      for (let i = -2; i <= 2; i++) {
+        glowStroke(() => { ctx.beginPath(); ctx.moveTo(i * 14, effect.size * .35); ctx.lineTo(i * 26, -effect.size * .45); }, "#d8ff3e", 3, progress * .9);
+      }
     } else if (effect.kind === "recovery") {
       ctx.setLineDash([8, 6]); glowStroke(() => { ctx.beginPath(); ctx.arc(0, 0, effect.size * (1.05 - progress * .25), 0, Math.PI * 2); }, effect.color, 5, Math.min(1, progress * 1.8)); ctx.setLineDash([]);
     } else if (effect.kind === "throw-slam") {
@@ -3042,12 +3572,17 @@ function drawImpactFx(f) {
   }
 }
 function drawFreezeFx(f) { if (f.frozen <= 0) return; const pulse = 1 + Math.sin((battle?.elapsed || 0) * 12) * .05; ctx.save(); ctx.translate(f.x, f.y - 92); ctx.globalAlpha = .78; ctx.strokeStyle = "#bdf6ff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 62 * pulse, 0, Math.PI * 2); ctx.stroke(); for (let i=0;i<8;i++) { const a=i*Math.PI/4; const r=48 + (i%2)*15; ctx.beginPath(); ctx.moveTo(Math.cos(a)*20,Math.sin(a)*20); ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r); ctx.stroke(); } ctx.fillStyle="#eefcff"; ctx.font="25px serif"; ctx.textAlign="center"; ctx.fillText("❄",0,-70); ctx.restore(); }
-function drawFighter(f) { const c=f.fighter.config||{}, flip=f.dir, crouching=f.crouch>0 || f.attackState?.variant==="crouch", attacking=f.pose.includes("attack") || f.pose==="cast" || f.pose.includes("grapple"), blocking=f.blocking || f.blockFlash>0, running=f.pose==="run"; drawImpactFx(f); drawFreezeFx(f); drawGrappleLink(f); const at=animationTransform(f,f.attackState); ctx.save();ctx.translate(f.x + at.offsetX, f.y + at.offsetY);ctx.scale(flip,1);ctx.scale(1.28,1.28);ctx.rotate(at.rotation);ctx.transform(1,at.skewY,at.skewX,1,0,0);ctx.scale(at.scaleX,at.scaleY);ctx.scale(1,crouching ? .76 : 1); if(spriteSheet){ const crop=f.fighter.example ? SPRITE_CROPS.kung : SPRITE_CROPS.cyber; ctx.imageSmoothingEnabled=true; ctx.globalAlpha=f.hurt > 0 ? .45 : f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
+function drawFighter(f) { const c=f.fighter.config||{}, crouching=f.crouch>0 || f.attackState?.variant==="crouch", attacking=f.pose.includes("attack") || f.pose==="cast" || f.pose.includes("grapple"), blocking=f.blocking || f.blockFlash>0, running=f.pose==="run"; drawImpactFx(f); drawFreezeFx(f); drawGrappleLink(f); const at=animationTransform(f,f.attackState), portrait=portraitSprite(f.fighter);
+  // Turn squash: when the fighter flips direction, briefly squash to zero and
+  // expand in the new direction — a 2-D projection of a 3-D pivot.
+  const tp = Math.min(1, (f.turnTimer || 0) / 0.11);
+  const facingScale = tp > 0.01 ? f.dir * Math.cos(tp * Math.PI) : f.dir;
+  ctx.save();ctx.translate(f.x + at.offsetX, f.y + at.offsetY);ctx.scale(facingScale,1);ctx.scale(1.28,1.28);ctx.rotate(at.rotation);ctx.transform(1,at.skewY,at.skewX,1,0,0);ctx.scale(at.scaleX,at.scaleY);ctx.scale(1,crouching ? .76 : 1); if(portrait || spriteSheet){ const crop=f.fighter.example ? SPRITE_CROPS.kung : SPRITE_CROPS.cyber; ctx.imageSmoothingEnabled=true; ctx.globalAlpha=f.hurt > 0 ? .7 + Math.sin((battle?.elapsed||0)*70)*.18 : f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
   // The two source crops are drawn facing opposite ways. Everything else in
   // this transform already works in "forward is +x" space, so only the image
   // itself is mirrored back to match - otherwise the forged sprite fights
   // with its back to its opponent.
-  ctx.save(); if(crop.facing<0) ctx.scale(-1,1); ctx.drawImage(spriteSheet,crop.x,crop.y,crop.w,crop.h,-74,-190,148,190); ctx.restore(); ctx.globalAlpha=1; if(attacking){ctx.font="26px serif";ctx.fillText((c.emojis||["👊"])[f.attackState?.variant==="air"?2:0]||"👊",45,-95);} drawMoveVisual(f,f.attackState); drawCombatStateFx(f,blocking,running); ctx.restore(); return; } if(f.hurt>0){ctx.globalAlpha=.32;ctx.fillStyle="#fff";ctx.fillRect(-50,-155,100,145);ctx.globalAlpha=1;} for(const t of f.trail){ctx.globalAlpha=t.t*2;ctx.fillStyle=c.accent||"#ff5b52";ctx.beginPath();ctx.arc(t.x-f.x,t.y-f.y-75,18,0,7);ctx.fill();}ctx.globalAlpha=f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
+  ctx.save(); if (portrait) { const ratio=portrait.naturalWidth/Math.max(1,portrait.naturalHeight), height=190, width=Math.min(190,Math.max(92,height*ratio)); ctx.drawImage(portrait,-width/2,-height,width,height); } else { if(crop.facing<0) ctx.scale(-1,1); ctx.drawImage(spriteSheet,crop.x,crop.y,crop.w,crop.h,-74,-190,148,190); } ctx.restore(); ctx.globalAlpha=1; if(attacking){ctx.font="26px serif";ctx.fillText((c.emojis||["👊"])[f.attackState?.variant==="air"?2:0]||"👊",45,-95);} drawMoveVisual(f,f.attackState); drawCombatStateFx(f,blocking,running); ctx.restore(); return; } if(f.hurt>0){ctx.globalAlpha=.32;ctx.fillStyle="#fff";ctx.fillRect(-50,-155,100,145);ctx.globalAlpha=1;} for(const t of f.trail){ctx.globalAlpha=t.t*2;ctx.fillStyle=c.accent||"#ff5b52";ctx.beginPath();ctx.arc(t.x-f.x,t.y-f.y-75,18,0,7);ctx.fill();}ctx.globalAlpha=f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
   ctx.fillStyle="rgba(0,0,0,.3)";ctx.beginPath();ctx.ellipse(0,4,45,10,0,0,7);ctx.fill();ctx.fillStyle=c.color||"#f2c447";ctx.fillRect(-23,-105,46,73);ctx.fillStyle=c.accent||"#bd293a";ctx.fillRect(-29,-92,58,16);ctx.fillStyle="#f6c59c";ctx.beginPath();ctx.arc(0,-126,27,0,7);ctx.fill();ctx.fillStyle="#18212d";ctx.fillRect(-23,-144,46,12);ctx.fillStyle="#111";ctx.fillRect(7,-128,4,4);
   const animation=f.attackState?.animation||{}, gesture=String(animation.gesture||"").toLowerCase(), phase=f.attackState?.grapplePhase, limbColor=c.color||"#f2c447";ctx.strokeStyle=limbColor;ctx.lineWidth=18;ctx.lineCap="round";
   if(animation.style==="kick" || animation.contact==="foot" || /roundhouse|sweep|knee/.test(gesture)) { ctx.beginPath();ctx.moveTo(-18,-92);ctx.lineTo(18,-66);ctx.stroke();ctx.strokeStyle="#213248";ctx.lineWidth=20;ctx.beginPath();ctx.moveTo(14,-34);ctx.lineTo(attacking && /dive/.test(gesture)?72:attacking?(gesture.includes("sweep")?68:58):25,attacking && /dive/.test(gesture)?18:attacking?(gesture.includes("sweep")?-18:-76):0);ctx.stroke();ctx.moveTo(-14,-34);ctx.lineTo(-25,0);ctx.stroke(); }
@@ -3075,4 +3610,3 @@ async function loadSprites() {
   spriteThumbs.kung=cropToData(SPRITE_CROPS.kung); spriteThumbs.cyber=cropToData(SPRITE_CROPS.cyber); renderRoster();
 }
 function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();loadStages();
-

@@ -11,6 +11,7 @@
 // browsers gate on user-activation the same way but support far more widely.
 // ─────────────────────────────────────────────────────────────────────────────
 const BASE = "uploads/Sounds/";
+const MAX_SFX_SECONDS = 1.9;
 
 // Semantic key -> pool of interchangeable takes. play() picks one at random so
 // the same move doesn't sound identical on every repeat.
@@ -36,44 +37,44 @@ const REGISTRY = {
   grappleSwing: ["003_swing_grap_0_0.wav", "004_swing_grap_1_0.wav", "005_swing_grap_2_0.wav"],
   throwComeout: ["107_throw_comeout.wav"],
   throwCatch: ["107_throw_catch.wav"],
-  throwWhiff: ["108_attack_offset.wav"],
+  throwWhiff: ["006_swing_blade_0.wav", "006_swing_blade_1.wav"],
 
   // Elemental casts
-  thunder: ["013_thunder_0.wav", "013_thunder_1.wav"],
+  thunder: ["014_electric_sl.wav", "014_electric_m.wav"],
   electric: ["014_electric_s.wav", "014_electric_sl.wav", "014_electric_m.wav"],
   electricBig: ["014_electric_l.wav", "014_electric_ll.wav"],
-  blaze: ["015_blaze_0.wav", "015_blaze_1.wav", "015_blaze_2.wav"],
-  explode: ["016_explode_0.wav", "016_explode_1.wav", "016_explode_2.wav"],
+  blaze: ["015_blaze_0.wav", "015_blaze_1.wav"],
+  explode: ["016_explode_0.wav", "016_explode_1.wav"],
   freezeCast: ["017_freeze_0.wav", "017_freeze_1.wav"],
   iceBreak: ["018_ice_break_0.wav", "018_ice_break_1.wav"],
   quake: ["019_quake_0.wav", "019_quake_1.wav"],
   boneCrack: ["021_bonecleak_0.wav", "021_bonecleak_1.wav"],
-  magicCircle: ["022_magiccircle_a.wav", "022_magiccircle_b.wav", "022_magiccircle_c.wav", "022_magiccircle_d.wav"],
+  magicCircle: ["022_magiccircle_a.wav", "022_magiccircle_c.wav", "022_magiccircle_d.wav"],
   cloth: ["019_cloth_a.wav", "019_cloth_b.wav", "019_cloth_c.wav"],
 
   // Contact resolution
   hitSlash: ["101_hit_slash_0.wav", "101_hit_slash_1.wav", "101_hit_slash_2.wav", "101_hit_slash_3.wav"],
   hitGrap: ["100_hit_grap_0.wav", "100_hit_grap_1.wav", "100_hit_grap_2.wav", "100_hit_grap_3.wav"],
-  hitCleanSlash: ["025_cleanhit_slash.wav"],
-  hitCleanGrap: ["025_cleanhit_grap.wav"],
-  counterSlash: ["103_hit_counter_slash_0.wav", "103_hit_counter_slash_1.wav", "103_hit_counter_slash_2.wav"],
+  hitCleanSlash: ["103_hit_counter_slash_2.wav", "101_hit_slash_3.wav"],
+  hitCleanGrap: ["102_hit_counter_grap_0.wav", "100_hit_grap_3.wav"],
+  counterSlash: ["103_hit_counter_slash_1.wav", "103_hit_counter_slash_2.wav"],
   counterGrap: ["102_hit_counter_grap_0.wav", "102_hit_counter_grap_1.wav", "102_hit_counter_grap_2.wav"],
-  guardSlash: ["105_guard_slash_0.wav", "105_guard_slash_1.wav", "105_guard_slash_2.wav"],
+  guardSlash: ["105_guard_slash_0.wav", "105_guard_slash_1.wav"],
   guardGrap: ["104_guard_grap_0.wav", "104_guard_grap_1.wav", "104_guard_grap_2.wav"],
-  guardCrush: ["106_guard_crush.wav"],
+  guardCrush: ["019_quake_0.wav", "105_guard_slash_1.wav"],
   blood: ["020_blood_0.wav", "020_blood_1.wav"],
 
   // Round / match flow
   getSet: ["024_getset_a.wav", "024_getset_b.wav"],
-  ko: ["300_ko_normal.wav"],
+  ko: ["403_penalty_lose.wav", "019_quake_1.wav"],
   roundResult: ["403_result_get.wav"],
   matchWin: ["403_bonus_get.wav"],
 
   // Meter / super
-  superStart: ["301_overdrive_start.wav"],
-  superBurst: ["302_spsys_burst.wav"],
+  superStart: ["302_spsys_c_assault.wav"],
+  superBurst: ["302_spsys_c_assault.wav", "302_spsys_rapid.wav"],
   exFlourish: ["302_spsys_rapid.wav"],
-  meterReady: ["301_overdrive_ready.wav"],
+  meterReady: ["302_spsys_rapid.wav"],
 
   // UI
   menuCursor: ["400_menu_cursor_a.wav", "400_menu_cursor_b.wav"],
@@ -86,7 +87,17 @@ const REGISTRY = {
 
 let volume = readStoredNumber("forge-sfx-volume", .8);
 let muted = readStoredFlag("forge-sfx-muted", false);
-function readStoredNumber(key, fallback) { try { const raw = Number(localStorage.getItem(key)); return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : fallback; } catch { return fallback; } }
+// localStorage returns null for a missing key, and Number(null) is 0. Check
+// for that absence explicitly so a first-time visitor gets the intended .8
+// volume instead of every sound being silently multiplied to zero.
+function readStoredNumber(key, fallback) {
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored === null || stored.trim() === "") return fallback;
+    const raw = Number(stored);
+    return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : fallback;
+  } catch { return fallback; }
+}
 function readStoredFlag(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : raw === "1"; } catch { return fallback; } }
 function writeStored(key, value) { try { localStorage.setItem(key, value); } catch { /* storage unavailable - in-memory only */ } }
 
@@ -125,7 +136,8 @@ function playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan }) {
     if (!buffer) return;
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.playbackRate.value = Math.max(.25, rate * (1 + (Math.random() * 2 - 1) * rateJitter));
+    const playbackRate = Math.max(.25, rate * (1 + (Math.random() * 2 - 1) * rateJitter));
+    source.playbackRate.value = playbackRate;
     const gain = context.createGain();
     gain.gain.value = Math.max(0, Math.min(1, gainLevel));
     const master = getMaster(); if (!master) return;
@@ -136,7 +148,10 @@ function playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan }) {
     } else {
       source.connect(gain); gain.connect(master);
     }
-    source.start(0);
+    // Keep the audible result under two seconds even if a future registry edit
+    // accidentally points at a long asset. The buffer duration is scaled by
+    // playback rate so slow-motion sounds remain within the same real-time cap.
+    source.start(0, 0, Math.min(buffer.duration, MAX_SFX_SECONDS * playbackRate));
   });
   return true;
 }
@@ -158,7 +173,12 @@ function playViaElement(url, { volume: gainLevel, rate }) {
   el.currentTime = 0;
   el.volume = Math.max(0, Math.min(1, gainLevel * volume));
   el.playbackRate = Math.max(.25, rate);
+  const clipToken = Symbol("sfx-clip");
+  el._sfxClipToken = clipToken;
   el.play().catch(() => { /* still blocked - nothing more to try */ });
+  window.setTimeout(() => {
+    if (el._sfxClipToken === clipToken && !el.paused) { el.pause(); el.currentTime = 0; }
+  }, Math.ceil(MAX_SFX_SECONDS * 1000));
 }
 
 // ── Unlock: keep trying on every early gesture until audio actually plays ──
@@ -205,6 +225,24 @@ export function playSfx(key, { volume: gainLevel = 1, rate = 1, rateJitter = .05
   // Web Audio only actually produces sound once its context is running; if it
   // is stuck suspended (or unavailable at all) go straight to the fallback so
   // a blocked AudioContext never means total silence.
+  const usedWebAudio = context && context.state === "running" && playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan });
+  if (!usedWebAudio) playViaElement(url, { volume: gainLevel, rate });
+}
+
+// Creator-uploaded move sounds take the same decoded/pool-backed route as the
+// built-in bank. The URL is validated again at the edge of playback so a
+// malformed fighter config cannot turn into a media request.
+export function playUploadedSfx(url, { volume: gainLevel = 1, rate = 1, rateJitter = .03, cooldown = 0, pan = 0 } = {}) {
+  if (muted || !/^https?:\/\/[^\s"'<>]+$/i.test(String(url || ""))) return;
+  const key = `uploaded:${url}`;
+  if (cooldown > 0) {
+    const now = (getCtx()?.currentTime) ?? performance.now() / 1000;
+    const last = lastPlayed.get(key) || -Infinity;
+    if (now - last < cooldown) return;
+    lastPlayed.set(key, now);
+  }
+  attemptUnlock();
+  const context = getCtx();
   const usedWebAudio = context && context.state === "running" && playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan });
   if (!usedWebAudio) playViaElement(url, { volume: gainLevel, rate });
 }

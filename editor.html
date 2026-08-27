@@ -38,7 +38,7 @@
 
             <div class="two-fields"><label>Character name<input id="character-name" maxlength="24" placeholder="Fighter name" required /><small class="field-help">This stays yours when AI forges the moves.</small></label><label>Author<input id="character-author" maxlength="24" placeholder="Forge Author" /><small class="field-help">Shown on the fighter card.</small></label></div>
 
-            <label class="prompt-box"><span>Core concept</span><textarea id="character-prompt" maxlength="700" placeholder="A lightning-fast arcade boxer with neon gloves, storm dashes, and a heavy uppercut..."></textarea><small>Describe their look, attitude, and one or two signature ideas. AI fills everything else in from this.</small></label>
+            <label class="prompt-box"><span>Core concept</span><textarea id="character-prompt" maxlength="700" placeholder="Amy Rose with her Piko Piko Hammer, acrobatic rushdown, and fearless optimism..."></textarea><small>Name an existing game/show fighter or describe an original one. The forge preserves recognizable signature traits, attitude, and gear.</small></label>
 
             <button type="button" id="generate-fighter" class="primary full generate-fighter-btn">GENERATE FIGHTER <span>✦</span></button>
 
@@ -47,7 +47,14 @@
               <div class="advanced-details-body">
                 <label class="simple-personality">Personality<input id="character-personality" maxlength="80" placeholder="e.g. cocky but loyal" /><small class="field-help">A short read on how they fight and speak.</small></label>
                 <label class="simple-backstory">Backstory<textarea id="character-backstory" maxlength="240" placeholder="Where they came from and what drives them..."></textarea><small class="field-help">One or two sentences is plenty.</small></label>
-                <div class="form-row tuning-row"><label>Buttons<select id="character-buttons"><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label><label>Combo aptitude<input id="character-combo" type="range" min="1" max="5" value="3" /><output id="combo-value">BALANCED</output></label></div>
+                <div class="form-row tuning-row"><label>Buttons<select id="character-buttons"><option selected>6</option></select><small class="field-help">Universal layout: LP, MP, HP, LK, MK, HK.</small></label><label>Combo aptitude<input id="character-combo" type="range" min="1" max="5" value="3" /><output id="combo-value">BALANCED</output></label></div>
+                <div class="stats-row">
+                  <label>Smartness<input id="character-smartness" type="range" min="1" max="5" value="3" /><output id="smartness-value">AVERAGE</output></label>
+                  <label>Aggression<input id="character-aggression" type="range" min="1" max="5" value="3" /><output id="aggression-value">NEUTRAL</output></label>
+                  <label>Defense<input id="character-defense" type="range" min="1" max="5" value="3" /><output id="defense-value">BALANCED</output></label>
+                  <label>Speed<input id="character-speed" type="range" min="1" max="5" value="3" /><output id="speed-value">AVERAGE</output></label>
+                  <label>Range<input id="character-range" type="range" min="1" max="5" value="3" /><output id="range-value">NORMAL</output></label>
+                </div>
                 <label>Attack emojis<input id="character-emojis" maxlength="60" value="👊 ⚡ 🦵 💥" /><small class="field-help">These flavor the fighter’s move callouts. Separate emojis with spaces.</small></label>
               </div>
             </details>
@@ -62,7 +69,7 @@
           <div class="editor-scroll">
             <div class="lab-note"><span class="signal"></span><div><strong>Normals throw fast, specials do the damage.</strong><span>Name a move and hit Generate for AI to design it alone — frame data, visuals, and behavior included. Turn on Advanced to hand-edit any of it.</span></div></div>
 
-            <fieldset class="moveset-fieldset"><legend>Normal attacks <small id="normal-count">0 / 3 · QUICK, LOW-COMMITMENT BUTTONS</small></legend><div id="normal-list"></div>
+            <fieldset class="moveset-fieldset"><legend>Normal attacks <small id="normal-count">0 / 6 · SIX-BUTTON BASICS</small></legend><div id="normal-list"></div>
               <div class="move-add-row"><button type="button" id="add-normal" class="small-button">+ ADD NORMAL <span>↗</span></button><div class="move-presets"><button type="button" data-normal-preset="jab">+ JAB</button><button type="button" data-normal-preset="kick">+ KICK</button><button type="button" data-normal-preset="sweep">+ LOW SWEEP</button></div></div>
             </fieldset>
 

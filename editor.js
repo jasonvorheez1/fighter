@@ -12,7 +12,7 @@ let activeAssetRequest = null;
 const types = ["melee", "projectile", "combo", "trap", "grapple", "freeze", "teleport", "pillar", "bomb", "gun"];
 const effects = ["arc", "orb", "slashes", "rune", "beam", "burst", "grapple", "freeze", "teleport", "pillar"];
 const elements = ["fire", "ice", "stone", "lightning", "shadow", "energy"];
-const motions = ["none", "projectile", "trap", "dash", "dash-attack", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar", "gun", "wall-slam", "spin", "multi-uppercut", "fly-in", "ground-pound"];
+const motions = ["none", "projectile", "trap", "dash", "dash-attack", "slide", "dive-kick", "rapid-jab", "charge", "bomb", "pull", "grapple", "teleport", "pillar", "gun", "wall-slam", "spin", "multi-uppercut", "fly-in", "ground-pound"];
 const patterns = ["straight", "arc", "fan", "boomerang", "orbit", "rain"];
 const styles = ["strike", "kick", "spin", "grapple", "slam", "dash", "cast"];
 const windups = ["none", "coil", "crouch", "reach", "hop", "spin"];
@@ -65,6 +65,11 @@ function optionList(values, selected, labels = {}) { return values.map(value => 
 function parseConfig(value) { try { return typeof value === "string" ? JSON.parse(value) : (value || {}); } catch { return {}; } }
 function safeEmojis(value) { const found = String(value || "").match(/\p{Extended_Pictographic}/gu) || []; return (found.length ? found : ["👊", "⚡", "💥"]).slice(0, 6); }
 function comboLabel(value) { return ["LOW", "MODEST", "BALANCED", "STRONG", "WILD"][Number(value) - 1] || "BALANCED"; }
+function smartnessLabel(v) { return ["SLOW", "NOVICE", "AVERAGE", "SHARP", "ELITE"][Number(v) - 1] || "AVERAGE"; }
+function aggressionLabel(v) { return ["PASSIVE", "CAUTIOUS", "NEUTRAL", "FORWARD", "RELENTLESS"][Number(v) - 1] || "NEUTRAL"; }
+function defenseLabel(v) { return ["FRAGILE", "LIGHT", "BALANCED", "TOUGH", "IRONCLAD"][Number(v) - 1] || "BALANCED"; }
+function speedLabel(v) { return ["SLUGGISH", "SLOW", "AVERAGE", "SWIFT", "BLAZING"][Number(v) - 1] || "AVERAGE"; }
+function rangeLabel(v) { return ["CLOSE", "SHORT", "NORMAL", "LONG", "HUGE"][Number(v) - 1] || "NORMAL"; }
 // Older saved fighters have no move.category. A normal is a fast, close-range,
 // no-frills button; anything ranged, a grab, a launcher, or slow is a special.
 function inferCategory(move) {
@@ -75,7 +80,8 @@ function inferCategory(move) {
   if (rangedType || type === "grapple" || move.launcher === true || startup > 10) return "special";
   return "normal";
 }
-const CATEGORY_CAP = { normal: 3, special: 4 };
+const CATEGORY_CAP = { normal: 6, special: 4 };
+const BASIC_BUTTONS = ["Light Punch", "Medium Punch", "Heavy Punch", "Light Kick", "Medium Kick", "Heavy Kick"];
 const CATEGORY_LABEL = { normal: "NORMAL", special: "SPECIAL" };
 const vfxLabels = Object.fromEntries(VFX_ENTRIES.map((entry) => [entry.id, `${entry.name} · ${entry.frames.length}F`]));
 const mainVfxIds = MAIN_VFX_ENTRIES.map((entry) => entry.id);
@@ -94,6 +100,7 @@ function normalizeMove(move = {}, fighterConfig = {}, depth = 0) {
   visual.secondary = /^#[0-9a-f]{6}$/i.test(visual.secondary) ? visual.secondary : (fighterConfig.color || visualDefaults[type].secondary);
   visual.size = number(visual.size, 12, 130, visualDefaults[type].size);
   visual.spriteUrl = /^https?:\/\/[^\s"'<>]+$/i.test(String(visual.spriteUrl || "")) ? String(visual.spriteUrl).slice(0, 600) : "";
+  visual.soundUrl = /^https?:\/\/[^\s"'<>]+$/i.test(String(visual.soundUrl || "")) ? String(visual.soundUrl).slice(0, 600) : "";
   const vfxDefault = moveVfxDefaults[type] || VFX_DEFAULTS.melee;
   visual.mainVfx = VFX_IDS.has(visual.mainVfx) ? visual.mainVfx : vfxDefault.mainVfx;
   visual.hitVfx = VFX_IDS.has(visual.hitVfx) ? visual.hitVfx : vfxDefault.hitVfx;
@@ -135,6 +142,7 @@ function normalizeMove(move = {}, fighterConfig = {}, depth = 0) {
     else if (/shoryu|rising (?:fist|dragon|fury)|multi.?upper|triple.?upper/.test(moveName)) behavior.motion = "multi-uppercut";
     else if (/fly.?in|\b(?:soar|swoop|comet)\b|air ?rush/.test(moveName)) behavior.motion = "fly-in";
     else if (/ground ?pound|earth ?shaker|\bseismic\b|meteor ?slam/.test(moveName)) behavior.motion = "ground-pound";
+    else if (/\bslide\b|skid|low.?dash|ground.?rush/.test(moveName)) behavior.motion = "slide";
   }
   behavior.rapidHits = rapidJab ? Math.round(number(behavior.rapidHits, 2, 8, 5)) : 1;
   behavior.rapidInterval = number(behavior.rapidInterval, .045, .18, .075);
@@ -208,6 +216,62 @@ function refreshCustomSpriteStatus(row) {
   status.textContent = input?.value ? "CUSTOM SPRITE ATTACHED · EMOJI FALLBACK REPLACED" : "NO CUSTOM SPRITE · EMOJI FALLBACK READY";
   status.classList.toggle("attached", Boolean(input?.value));
 }
+function refreshMoveSoundStatus(row) {
+  const status = row.querySelector(".move-sfx-status"), clear = row.querySelector(".clear-move-sfx"), input = row.querySelector('[data-field="visual.soundUrl"]');
+  if (!status) return;
+  const attached = Boolean(input?.value);
+  status.textContent = attached ? "CUSTOM SFX ATTACHED · COMPACT 16 KHZ MONO" : "NO CUSTOM SFX · ARENA SOUND BANK WILL PLAY";
+  status.classList.toggle("attached", attached);
+  if (clear) clear.hidden = !attached;
+}
+
+// The source clip is reduced in-browser to a short mono WAV (~60 KB). Only
+// the public blob URL joins the fighter blueprint; audio bytes never touch D1.
+const SFX_SAMPLE_RATE = 16000;
+const SFX_MAX_SECONDS = 1.85;
+const SFX_MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+function wavFromMonoBuffer(buffer) {
+  const samples = buffer.getChannelData(0), bytes = new ArrayBuffer(44 + samples.length * 2), view = new DataView(bytes);
+  const writeText = (offset, text) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  writeText(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); writeText(8, "WAVE"); writeText(12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, SFX_SAMPLE_RATE, true);
+  view.setUint32(28, SFX_SAMPLE_RATE * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); writeText(36, "data"); view.setUint32(40, samples.length * 2, true);
+  for (let index = 0; index < samples.length; index++) view.setInt16(44 + index * 2, Math.round(Math.max(-1, Math.min(1, samples[index])) * 0x7fff), true);
+  return bytes;
+}
+async function compressMoveSfx(file) {
+  if (!file?.type?.startsWith("audio/")) throw new Error("Choose an audio file for the move effect.");
+  if (file.size > SFX_MAX_UPLOAD_BYTES) throw new Error("That sound is too large to process (12 MB maximum before compression).");
+  const Decoder = window.AudioContext || window.webkitAudioContext;
+  const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Decoder || !Offline) throw new Error("This browser cannot compress audio effects.");
+  let decoder;
+  try {
+    decoder = new Decoder();
+    const decoded = await decoder.decodeAudioData(await file.arrayBuffer());
+    const frames = Math.max(1, Math.floor(Math.min(decoded.duration, SFX_MAX_SECONDS) * SFX_SAMPLE_RATE));
+    const offline = new Offline(1, frames, SFX_SAMPLE_RATE);
+    const source = offline.createBufferSource(); source.buffer = decoded; source.connect(offline.destination); source.start(0, 0, Math.min(decoded.duration, SFX_MAX_SECONDS));
+    return new Blob([wavFromMonoBuffer(await offline.startRendering())], { type: "audio/wav" });
+  } finally { decoder?.close?.().catch?.(() => {}); }
+}
+async function attachMoveSfx(row, file) {
+  const picker = row.querySelector(".move-sfx-upload"), status = row.querySelector(".move-sfx-status"), urlInput = row.querySelector('[data-field="visual.soundUrl"]');
+  if (!file || !picker || !status || !urlInput) return;
+  picker.disabled = true; status.textContent = "COMPRESSING EFFECT…";
+  try {
+    const compact = await compressMoveSfx(file);
+    status.textContent = `UPLOADING ${(compact.size / 1024).toFixed(0)} KB EFFECT…`;
+    const response = await fetch("/api/fighter-sfx", { method: "POST", headers: { "content-type": "audio/wav" }, body: compact });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.url) throw new Error(body.error || "Could not upload the compressed sound effect.");
+    urlInput.value = body.url;
+    refreshMoveSoundStatus(row); markDirty(); refreshCodePreview();
+  } catch (error) {
+    status.textContent = error.message || "Could not attach that sound effect.";
+    status.classList.remove("attached");
+  } finally { picker.disabled = false; picker.value = ""; }
+}
 
 // A follow-up is edited in place on its parent's card. Only the fields that
 // change how it plays are exposed; everything else (its visual script, its
@@ -231,7 +295,7 @@ function buildMoveRow(move, category) {
     <div class="move-advanced advanced-only">
     <div class="move-core">${selectField("Combo role", "role", roles, normalized.role)}${selectField("Variant", "variant", ["light", "medium", "heavy", "all"], normalized.variant)}<label class="check-field">Launcher<input data-field="launcher" type="checkbox" ${normalized.launcher ? "checked" : ""}></label><label class="check-field">Crouching<input data-field="crouch" type="checkbox" ${normalized.crouch ? "checked" : ""}></label><label class="check-field">Air ready<input data-field="air" type="checkbox" ${normalized.air ? "checked" : ""}></label></div>
     <div class="move-frame-grid">${field("Startup", "startup", normalized.startup, "number", "min=1 max=60")}${field("Active", "active", normalized.active, "number", "min=1 max=20")}${field("Endlag", "endlag", normalized.endlag, "number", "min=1 max=90")}${field("Hitstun", "hitstun", normalized.hitstun, "number", "min=1 max=60")}${field("Reach", "reach", normalized.reach || "", "number", "min=70 max=520 placeholder=auto")}${field("Juggle cost", "juggle", normalized.juggle, "number", "min=1 max=15")}</div>
-    <details class="move-recipe"><summary>Visual recipe <span>+</span></summary><div class="recipe-grid">${selectField("Main effect asset", "visual.mainVfx", mainVfxIds, visual.mainVfx, "", vfxLabels)}${selectField("Hit spark asset", "visual.hitVfx", hitVfxIds, visual.hitVfx, "", vfxLabels)}${field("VFX FPS", "visual.vfxFps", visual.vfxFps, "number", "min=6 max=30")}${selectField("Effect", "visual.effect", effects, visual.effect)}${selectField("Element", "visual.element", elements, visual.element)}${field("Primary", "visual.color", visual.color, "color")}${field("Secondary", "visual.secondary", visual.secondary, "color")}${field("Size", "visual.size", visual.size, "number", "min=12 max=130")}${field("Emoji", "visual.emoji", visual.emoji)}${selectField("Weapon", "visual.weapon", weaponIds, visual.weapon || "", "", weaponLabels)}${selectField("Weapon motion", "behavior.weaponMotion", weaponMotionIds, behavior.weaponMotion || "", "", weaponMotionLabels)}${selectField("Off hand (dual wield)", "visual.weaponOffhand", weaponIds, visual.weaponOffhand || "", "", weaponLabels)}${selectField("Off-hand motion", "behavior.weaponMotionOffhand", weaponMotionIds, behavior.weaponMotionOffhand || "", "", weaponMotionOffhandLabels)}${field("Weapon size", "visual.weaponScale", visual.weaponScale, "number", "min=.35 max=1.8 step=.05")}<label class="script-field">JavaScript visual program<textarea data-field="visual.script" rows="5">${escapeHtml(visual.script || "")}</textarea><small>AI-authored canvas code. It runs through the arena drawing API.</small><small class="script-status" aria-live="polite"></small></label></div><a class="recipe-library-link" href="vfx.html">BROWSE ALL 270 PNG ASSETS ↗</a><div class="custom-sprite-status" aria-live="polite"></div></details>
+    <details class="move-recipe"><summary>Visual recipe <span>+</span></summary><div class="recipe-grid">${selectField("Main effect asset", "visual.mainVfx", mainVfxIds, visual.mainVfx, "", vfxLabels)}${selectField("Hit spark asset", "visual.hitVfx", hitVfxIds, visual.hitVfx, "", vfxLabels)}${field("VFX FPS", "visual.vfxFps", visual.vfxFps, "number", "min=6 max=30")}${selectField("Effect", "visual.effect", effects, visual.effect)}${selectField("Element", "visual.element", elements, visual.element)}${field("Primary", "visual.color", visual.color, "color")}${field("Secondary", "visual.secondary", visual.secondary, "color")}${field("Size", "visual.size", visual.size, "number", "min=12 max=130")}${field("Emoji", "visual.emoji", visual.emoji)}${selectField("Weapon", "visual.weapon", weaponIds, visual.weapon || "", "", weaponLabels)}${selectField("Weapon motion", "behavior.weaponMotion", weaponMotionIds, behavior.weaponMotion || "", "", weaponMotionLabels)}${selectField("Off hand (dual wield)", "visual.weaponOffhand", weaponIds, visual.weaponOffhand || "", "", weaponLabels)}${selectField("Off-hand motion", "behavior.weaponMotionOffhand", weaponMotionIds, behavior.weaponMotionOffhand || "", "", weaponMotionOffhandLabels)}${field("Weapon size", "visual.weaponScale", visual.weaponScale, "number", "min=.35 max=1.8 step=.05")}<label class="script-field">JavaScript visual program<textarea data-field="visual.script" rows="5">${escapeHtml(visual.script || "")}</textarea><small>AI-authored canvas code. It runs through the arena drawing API.</small><small class="script-status" aria-live="polite"></small></label></div><div class="move-sfx-tools"><label class="move-sfx-upload-label">CUSTOM MOVE SFX <input class="move-sfx-upload" type="file" accept="audio/*"><small>UPLOAD · AUTO-COMPRESSES TO 16 KHZ MONO</small></label><span class="move-sfx-status" aria-live="polite"></span><button type="button" class="clear-move-sfx">REMOVE</button></div><a class="recipe-library-link" href="vfx.html">BROWSE ALL 270 PNG ASSETS ↗</a><div class="custom-sprite-status" aria-live="polite"></div></details>
     <details class="move-recipe"><summary>Behavior recipe <span>+</span></summary><div class="recipe-grid">${selectField("Motion", "behavior.motion", motions, behavior.motion)}${selectField("Projectile path", "behavior.pattern", patterns, behavior.pattern)}${field("Rapid hits", "behavior.rapidHits", behavior.rapidHits, "number", "min=2 max=8")}${field("Hit interval", "behavior.rapidInterval", behavior.rapidInterval, "number", "min=.045 max=.18 step=.005")}${field("Speed", "behavior.speed", behavior.speed, "number", "min=0 max=700")}${field("Gravity", "behavior.gravity", behavior.gravity, "number", "min=-1600 max=1600")}${field("Homing", "behavior.homing", behavior.homing, "number", "min=0 max=1 step=.05")}${field("Spread degrees", "behavior.spread", behavior.spread, "number", "min=-75 max=75")}${field("Bounces", "behavior.bounces", behavior.bounces, "number", "min=0 max=3")}${field("Orbit radius", "behavior.orbitRadius", behavior.orbitRadius, "number", "min=24 max=220")}${field("Orbit speed", "behavior.orbitSpeed", behavior.orbitSpeed, "number", "min=-12 max=12 step=.1")}${field("Return delay", "behavior.returnDelay", behavior.returnDelay, "number", "min=.15 max=1.5 step=.05")}${field("Dash distance", "behavior.dashDistance", behavior.dashDistance, "number", "min=30 max=300")}${field("Charge seconds", "behavior.charge", behavior.charge, "number", "min=.12 max=2.5 step=.05")}${field("Charge power", "behavior.chargePower", behavior.chargePower, "number", "min=.7 max=2.5 step=.05")}${field("Bomb fuse", "behavior.fuse", behavior.fuse, "number", "min=.18 max=2.5 step=.05")}${field("Radius", "behavior.radius", behavior.radius, "number", "min=0 max=140")}${field("Shots", "behavior.shots", behavior.shots, "number", "min=1 max=3")}${field("Lifetime", "behavior.lifetime", behavior.lifetime, "number", "min=.35 max=3 step=.05")}${field("Hold", "behavior.hold", behavior.hold, "number", "min=.08 max=1.2 step=.05")}${field("Freeze", "behavior.freeze", behavior.freeze, "number", "min=.25 max=2.5 step=.05")}${field("Offset", "behavior.offset", behavior.offset, "number", "min=40 max=180")}${selectField("Status", "behavior.status", ["none", "freeze"], behavior.status)}${selectField("Element", "behavior.element", elements, behavior.element)}${selectField("Finisher", "behavior.finisher", ["slam", "throw"], behavior.finisher || "slam")}${field("KB power", "behavior.knockback.power", behavior.knockback.power, "number", "min=0 max=900")}${field("KB horizontal", "behavior.knockback.horizontal", behavior.knockback.horizontal, "number", "min=0 max=900")}${field("KB vertical", "behavior.knockback.vertical", behavior.knockback.vertical, "number", "min=0 max=900")}${field("KB angle", "behavior.knockback.angle", behavior.knockback.angle, "number", "min=-80 max=80")}${selectField("KB direction", "behavior.knockback.direction", ["away", "toward", "up", "down"], behavior.knockback.direction)}${field("Hitstop", "behavior.knockback.hitstop", behavior.knockback.hitstop, "number", "min=0 max=.2 step=.01")}</div></details>
     <details class="move-recipe"><summary>Animation recipe <span>+</span></summary><div class="recipe-grid">${selectField("Style", "animation.style", styles, animation.style)}${field("Gesture", "animation.gesture", animation.gesture)}${selectField("Windup", "animation.windup", windups, animation.windup)}${selectField("Contact", "animation.contact", contacts, animation.contact)}${selectField("Finish", "animation.finish", finishes, animation.finish)}${field("Intensity", "animation.intensity", animation.intensity, "number", "min=.45 max=1.6 step=.05")}${field("Rotate X", "animation.transform.rotateX", animation.transform.rotateX, "number", "min=-360 max=360")}${field("Rotate Y", "animation.transform.rotateY", animation.transform.rotateY, "number", "min=-360 max=360")}${field("Rotate Z", "animation.transform.rotateZ", animation.transform.rotateZ, "number", "min=-360 max=360")}${field("Spin", "animation.transform.spin", animation.transform.spin, "number", "min=-720 max=720")}${field("Spin speed", "animation.transform.spinSpeed", animation.transform.spinSpeed, "number", "min=-12 max=12 step=.1")}${field("Scale X", "animation.transform.scaleX", animation.transform.scaleX, "number", "min=.35 max=2.4 step=.05")}${field("Scale Y", "animation.transform.scaleY", animation.transform.scaleY, "number", "min=.35 max=2.4 step=.05")}${field("Skew X", "animation.transform.skewX", animation.transform.skewX, "number", "min=-.95 max=.95 step=.05")}${field("Skew Y", "animation.transform.skewY", animation.transform.skewY, "number", "min=-.95 max=.95 step=.05")}${field("Offset X", "animation.transform.offsetX", animation.transform.offsetX, "number", "min=-180 max=180")}${field("Offset Y", "animation.transform.offsetY", animation.transform.offsetY, "number", "min=-180 max=180")}${field("Orbit", "animation.transform.orbit", animation.transform.orbit, "number", "min=-1 max=1 step=.05")}${field("Pulse", "animation.transform.pulse", animation.transform.pulse, "number", "min=0 max=1 step=.05")}</div></details>
     ${followUpSection(normalized)}
@@ -246,8 +310,10 @@ function buildMoveRow(move, category) {
   row.querySelector(".generate-move").onclick = () => regenerateSingleMove(row);
   row.addEventListener("input", (event) => { refreshMoveCard(row); if (event.target.dataset.field === "visual.script") refreshScriptStatus(row); markDirty(); });
   row.addEventListener("change", () => { refreshMoveCard(row); markDirty(); });
-  row.insertAdjacentHTML("beforeend", `<input type="hidden" data-field="visual.spriteUrl" value="${escapeHtml(visual.spriteUrl || "")}">`);
-  refreshMoveCard(row); refreshCustomSpriteStatus(row); refreshScriptStatus(row);
+  row.insertAdjacentHTML("beforeend", `<input type="hidden" data-field="visual.spriteUrl" value="${escapeHtml(visual.spriteUrl || "")}"><input type="hidden" data-field="visual.soundUrl" value="${escapeHtml(visual.soundUrl || "")}">`);
+  row.querySelector(".move-sfx-upload").onchange = (event) => attachMoveSfx(row, event.target.files?.[0]);
+  row.querySelector(".clear-move-sfx").onclick = () => { const input = row.querySelector('[data-field="visual.soundUrl"]'); if (input) input.value = ""; refreshMoveSoundStatus(row); markDirty(); refreshCodePreview(); };
+  refreshMoveCard(row); refreshCustomSpriteStatus(row); refreshMoveSoundStatus(row); refreshScriptStatus(row);
   return row;
 }
 function addMove(move = {}, category = "special") {
@@ -261,7 +327,7 @@ function renumberMoves() {
   for (const category of ["normal", "special"]) {
     const rows = [...listFor(category).children];
     rows.forEach((row, index) => row.querySelector(".move-number").textContent = index + 1);
-    $(`#${category}-count`).textContent = `${rows.length} / ${CATEGORY_CAP[category]}${category === "normal" ? " · QUICK, LOW-COMMITMENT BUTTONS" : " · THE FIGHTER'S SIGNATURE TOOLS"}`;
+    $(`#${category}-count`).textContent = `${rows.length} / ${CATEGORY_CAP[category]}${category === "normal" ? " · SIX-BUTTON BASICS" : " · THE FIGHTER'S SIGNATURE TOOLS"}`;
   }
 }
 
@@ -295,7 +361,7 @@ function collectMoves() {
 }
 function collectData() {
   const existing = currentFighter?.config || {};
-  return { ...existing, name: $("#character-name").value.trim(), author: $("#character-author").value.trim() || "Forge Author", style: existing.style || "Original arcade fighter", personality: $("#character-personality").value.trim() || "determined", backstory: $("#character-backstory").value.trim() || "A new challenger steps into the arena.", emojis: safeEmojis($("#character-emojis").value), buttons: Number($("#character-buttons").value), combo: Number($("#character-combo").value), specials: collectMoves() };
+  return { ...existing, name: $("#character-name").value.trim(), author: $("#character-author").value.trim() || "Forge Author", style: existing.style || "Original arcade fighter", personality: $("#character-personality").value.trim() || "determined", backstory: $("#character-backstory").value.trim() || "A new challenger steps into the arena.", emojis: safeEmojis($("#character-emojis").value), buttons: 6, combo: Number($("#character-combo").value), smartness: Number($("#character-smartness").value), aggression: Number($("#character-aggression").value), defense: Number($("#character-defense").value), speed: Number($("#character-speed").value), range: Number($("#character-range").value), specials: collectMoves() };
 }
 function buildScript(data) { return buildFighterModule(data, normalizeMove); }
 function refreshCodePreview() { $("#code-preview").textContent = buildScript(collectData()); }
@@ -365,14 +431,26 @@ function fillForm(fighter = null) {
   const config = fighter?.config || {};
   $("#character-name").value = fighter?.name || ""; $("#character-author").value = fighter?.author || "";
   $("#character-personality").value = config.personality || ""; $("#character-backstory").value = config.backstory || "";
-  $("#character-prompt").value = fighter?.prompt || config.style || ""; $("#character-buttons").value = String(config.buttons || 4); $("#character-combo").value = String(config.combo || 3); $("#combo-value").textContent = comboLabel($("#character-combo").value);
+  $("#character-prompt").value = fighter?.prompt || config.style || ""; $("#character-buttons").value = "6"; $("#character-combo").value = String(config.combo || 3); $("#combo-value").textContent = comboLabel($("#character-combo").value); $("#character-smartness").value = String(config.smartness || 3); $("#smartness-value").textContent = smartnessLabel($("#character-smartness").value); $("#character-aggression").value = String(config.aggression || 3); $("#aggression-value").textContent = aggressionLabel($("#character-aggression").value); $("#character-defense").value = String(config.defense || 3); $("#defense-value").textContent = defenseLabel($("#character-defense").value); $("#character-speed").value = String(config.speed || 3); $("#speed-value").textContent = speedLabel($("#character-speed").value); $("#character-range").value = String(config.range || 3); $("#range-value").textContent = rangeLabel($("#character-range").value);
   $("#character-emojis").value = (config.emojis || ["👊", "⚡", "🦵", "💥"]).join(" ");
   $("#normal-list").innerHTML = ""; $("#special-list").innerHTML = "";
-  const moves = Array.isArray(config.specials) && config.specials.length ? config.specials : [
-    { name:"Quick Jab", type:"melee", variant:"light", category:"normal", startup:4, active:2, endlag:10, hitstun:10 },
+  const sourceMoves = Array.isArray(config.specials) && config.specials.length ? config.specials : [
+    { name:"Light Punch", type:"melee", role:"light-punch", variant:"light", category:"normal", startup:4, active:2, endlag:10, hitstun:10 },
+    { name:"Medium Punch", type:"melee", role:"medium-punch", variant:"medium", category:"normal", startup:6, active:2, endlag:12, hitstun:12 },
+    { name:"Heavy Punch", type:"melee", role:"heavy-punch", variant:"heavy", category:"normal", startup:9, active:3, endlag:18, hitstun:16 },
+    { name:"Light Kick", type:"melee", role:"light-kick", variant:"light", category:"normal", startup:5, active:3, endlag:11, hitstun:11 },
+    { name:"Medium Kick", type:"melee", role:"medium-kick", variant:"medium", category:"normal", startup:7, active:3, endlag:15, hitstun:13 },
+    { name:"Heavy Kick", type:"melee", role:"heavy-kick", variant:"heavy", category:"normal", startup:10, active:4, endlag:20, hitstun:17 },
     { name:"Rising Launcher", type:"melee", variant:"heavy", launcher:true, category:"special" },
     { name:"Flash Arc", type:"projectile", variant:"light", category:"special" }
   ];
+  const basicDefaults = BASIC_BUTTONS.map((name, index) => ({ name, type:"melee", role:name.toLowerCase().replace(" ", "-"), variant:index % 3 === 0 ? "light" : index % 3 === 1 ? "medium" : "heavy", category:"normal", startup:4 + Math.floor(index / 3) * 2 + index % 3, active:2 + (index % 2), endlag:10 + index * 2, hitstun:10 + index }));
+  const moves = BASIC_BUTTONS.map((name, index) => sourceMoves.find((move) => {
+    const category = String(move?.category || "").toLowerCase();
+    const exactName = String(move?.name || "").trim().toLowerCase() === name.toLowerCase();
+    return category !== "special" && (exactName || (category === "normal" && String(move?.role || "").toLowerCase() === basicDefaults[index].role));
+  }) || basicDefaults[index]);
+  moves.push(...sourceMoves.filter((move) => !moves.includes(move)));
   for (const move of moves) addMove(move, inferCategory(move));
   renumberMoves();
   updatePortraitPreview();
@@ -392,6 +470,11 @@ async function loadFighter() {
 }
 
 $("#character-combo").oninput = (event) => $("#combo-value").textContent = comboLabel(event.target.value);
+$("#character-smartness").oninput = (event) => $("#smartness-value").textContent = smartnessLabel(event.target.value);
+$("#character-aggression").oninput = (event) => $("#aggression-value").textContent = aggressionLabel(event.target.value);
+$("#character-defense").oninput = (event) => $("#defense-value").textContent = defenseLabel(event.target.value);
+$("#character-speed").oninput = (event) => $("#speed-value").textContent = speedLabel(event.target.value);
+$("#character-range").oninput = (event) => $("#range-value").textContent = rangeLabel(event.target.value);
 $("#add-normal").onclick = () => { if (addMove({}, "normal")) { markDirty(); refreshCodePreview(); } };
 $("#add-special").onclick = () => { if (addMove({}, "special")) { markDirty(); refreshCodePreview(); } };
 const presetMoves = {
@@ -453,8 +536,8 @@ $("#save-fighter").onclick = async () => {
   button.disabled = false;
 };
 
-const MOVE_SCHEMA_NOTE = `Each move needs name, category ("normal" or "special"), type (melee, projectile, combo, trap, grapple, freeze, teleport, pillar, bomb, or gun), role, variant, launcher, crouch, air, startup, active, endlag, hitstun, reach, juggle, visual, behavior, and animation. A "normal" move is a fast, low-commitment poke: melee, startup under 10, no exotic behavior - a jab, a kick, a low sweep. A "special" move is the character's signature tool and can use any type, motion, or behavior. Use the Fighter Forge VFX bank: mainVfx controls the move sequence and hitVfx is the exact contact spark. Keep frame data usable for real links. Juggle is the air-combo cost from 1-15; launchers should spend the opponent's finite juggle budget. Give every move a distinct animation.gesture such as jab, cross, hook, elbow, palm, knee, roundhouse, sweep, overhead, thrust, slam, spin, burst, cast, or a short custom label. Behavior motion may be none, projectile, trap, dash, dash-attack, dive-kick, rapid-jab, charge, bomb, pull, grapple, teleport, pillar, gun, wall-slam, spin, multi-uppercut, fly-in, or ground-pound. Rapid-jab uses behavior.rapidHits and behavior.rapidInterval; dive-kick moves are air:true and accelerate toward the floor. Charge moves use behavior.charge seconds and chargePower; dash-attack moves use behavior.dashDistance; bomb moves use behavior.fuse and radius for a timed area explosion. Gun moves use type gun and motion gun for a fast flat bullet. Wall-slam moves use motion wall-slam to send the victim skidding into the nearest wall. Spin and multi-uppercut moves use motion spin or multi-uppercut with hits and hitInterval for a rotating or rising multi-hit; multi-uppercut is always a launcher. Fly-in moves use motion fly-in to rocket the attacker across the screen. Ground-pound moves use motion ground-pound to slam down from the air with a landing shockwave. Add behavior.knockback {horizontal:0-900, vertical:0-900, power:0-900, angle:-80-80, direction:"away|toward|up|down", hitstop:0-0.2, carry:true|false, wallBounce:true|false, groundBounce:true|false} whenever the move needs custom impact. Add animation.transform {rotateX:-360-360, rotateY:-360-360, rotateZ:-360-360, spin:-720-720, spinSpeed:-12-12, scaleX:0.35-2.4, scaleY:0.35-2.4, skewX:-0.95-0.95, skewY:-0.95-0.95, offsetX:-180-180, offsetY:-180-180, orbit:-1-1, pulse:0-1} for any expressive motion. These are declarative controls for the body; each move MUST also include visual.script containing literal JavaScript code for its unique canvas visual. Return only the code body, no markdown or function wrapper. The restricted API is api.line, api.arc, api.ring, api.circle, api.spark, api.slash, api.streak, api.shock, api.wedge, api.flash, api.glow, and api.asset(vfxId,x,y,size,alpha,rotation). The script receives t, p, active, size, color, secondary, move, and Math. Use loops and trigonometry to make every attack visually distinct. Never use window, document, network, storage, timers, imports, constructors, or globals.`;
-const MOVE_BEHAVIOR_GUIDE = `Expand the move design beyond basic straight attacks. Behavior may include pattern straight, arc, fan, boomerang, orbit, or rain; gravity, homing, spread, bounces, orbitRadius, orbitSpeed, and returnDelay are supported path controls. Combine them with charge, dash-attack, bomb, teleport, pillar, freeze, grapple, knockback, and expressive animation.transform values. Keep combat behavior declarative data, but write each move's visual.script as literal JavaScript drawing code using only the restricted visual API.`;
+const MOVE_SCHEMA_NOTE = `Each move needs name, category ("normal" or "special"), type (melee, projectile, combo, trap, grapple, freeze, teleport, pillar, bomb, or gun), role, variant, launcher, crouch, air, startup, active, endlag, hitstun, reach, juggle, visual, behavior, and animation. A "normal" move is a fast, low-commitment poke: melee, startup under 10, no exotic behavior - a jab, a kick, a low sweep. A "special" move is the character's signature tool and can use any type, motion, or behavior. Use the Fighter Forge VFX bank: mainVfx controls the move sequence and hitVfx is the exact contact spark. Keep frame data usable for real links. Juggle is the air-combo cost from 1-15; launchers should spend the opponent's finite juggle budget. Give every move a distinct animation.gesture such as jab, cross, hook, elbow, palm, knee, roundhouse, sweep, overhead, thrust, slam, spin, burst, cast, or a short custom label. Behavior motion may be none, projectile, trap, dash, dash-attack, slide, dive-kick, rapid-jab, charge, bomb, pull, grapple, teleport, pillar, gun, wall-slam, spin, multi-uppercut, fly-in, or ground-pound. Rapid-jab uses behavior.rapidHits and behavior.rapidInterval — ideal for claw flurries, rapid scratches, or machine-gun jabs. Slide uses motion slide with behavior.slideSpeed (180-560) for a crouching low-dash along the floor that hits low and low-profiles projectiles — perfect for cat lunges, slide tackles, or skating attacks. Dive-kick moves are air:true and accelerate toward the floor. Fly-in with behavior.flyHeight:0-30 creates a ground-level pounce that rockets across the screen close to the floor. Charge moves use behavior.charge seconds and chargePower; dash-attack moves use behavior.dashDistance; bomb moves use behavior.fuse and radius for a timed area explosion. Gun moves use type gun and motion gun for a fast bullet; add behavior.angleOffset (positive = down, negative = up) for a diagonal shot (e.g. -20 for an anti-air beam, +18 for a low-skimmer), and behavior.angleMode:"fixed" to fire at that angle regardless of the foe's position. Use behavior.linger with behavior.speed:80-150 for a slow lingering bullet that stays on screen. Use behavior.pierce:true for a round that passes through on hit. behavior.wallBounce:true makes a projectile reflect off stage walls. Wall-slam moves use motion wall-slam to send the victim skidding into the nearest wall. Spin and multi-uppercut moves use motion spin or multi-uppercut with hits and hitInterval for a rotating or rising multi-hit; multi-uppercut is always a launcher. Fly-in moves use motion fly-in to rocket the attacker across the screen with behavior.flyHeight (0-260). Ground-pound moves use motion ground-pound to slam down from the air with a landing shockwave. Add behavior.knockback {horizontal:0-900, vertical:0-900, power:0-900, angle:-80-80, direction:"away|toward|up|down", hitstop:0-0.2, carry:true|false, wallBounce:true|false, groundBounce:true|false} whenever the move needs custom impact. Add animation.transform {rotateX:-360-360, rotateY:-360-360, rotateZ:-360-360, spin:-720-720, spinSpeed:-12-12, scaleX:0.35-2.4, scaleY:0.35-2.4, skewX:-0.95-0.95, skewY:-0.95-0.95, offsetX:-180-180, offsetY:-180-180, orbit:-1-1, pulse:0-1} for any expressive motion. These are declarative controls for the body; each move MUST also include visual.script containing literal JavaScript code for its unique canvas visual. Return only the code body, no markdown or function wrapper. The restricted API is api.line, api.arc, api.ring, api.circle, api.spark, api.slash, api.streak, api.shock, api.wedge, api.flash, api.glow, and api.asset(vfxId,x,y,size,alpha,rotation). The script receives t, p, active, size, color, secondary, move, and Math. Use loops and trigonometry to make every attack visually distinct. Never use window, document, network, storage, timers, imports, constructors, or globals.`;
+const MOVE_BEHAVIOR_GUIDE = `Design every move to express the character's identity, not just fill a slot. Push beyond basic straight attacks — use unusual combinations of motions, patterns, and physics to make each move feel like it belongs to this specific fighter. Behavior patterns: straight, arc, fan, boomerang, orbit, rain; path controls: gravity, homing, spread, bounces, orbitRadius, orbitSpeed, returnDelay. For cat-like fighters: rapid-jab for claw flurries (behavior.rapidHits:4-6 for a raking scratch), slide for low crouching dashes that skim the floor and low-profile projectiles (behavior.slideSpeed:280-450), fly-in with behavior.flyHeight:0-20 for a ground-level pounce. For gun/zoner fighters: behavior.angleOffset (positive=down, negative=up) for angled shots, behavior.angleMode:"fixed" for programmed angles, behavior.linger:2-5 for zone-denial slow bullets, behavior.pierce:true for pass-through shots, behavior.wallBounce:true for ricochets. Mixing: a dive-kick that wall-slams, a rapid-jab with gravity-arc projectiles at the end, a slide into a launcher. behavior.knockback supports wallBounce:true and groundBounce:true for extended combos. Every move needs a visual.script — make the canvas program express the move's personality: a slide should show skid sparks and a low dust trail, a claw should spray diagonal slashes, a pounce should have a forward-pointing streak. Keep combat behavior declarative, write visual.script as literal JavaScript using only the restricted canvas API.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE FORGE STUDIO
@@ -467,6 +550,8 @@ const MOVE_BEHAVIOR_GUIDE = `Expand the move design beyond basic straight attack
 //   COMBAT     - turns that brief into real frame data, behavior and knockback.
 //   VFX ARTIST - takes the finished mechanics and writes the canvas program for
 //                each move, so the look is designed around what the move does.
+//   CPU DESIGNER - reads the finished fighter and teaches the computer pilot
+//                  which tools to prefer, space, and avoid.
 //
 // Every stage degrades gracefully: if a later specialist fails, the work the
 // earlier ones already did is kept.
@@ -482,10 +567,78 @@ const WEAPON_NOTE = `If a move is performed with a weapon rather than bare hands
 const FOLLOW_UP_NOTE = `A move may carry a "followUp": a full move object that only exists as that move's exclusive sequel, plus "followUpWindow" in seconds (0.18-1.2). Landing the parent opens a short window in which only the sequel is available - a dash attack that cashes out into its own rising multi-hit uppercut, a wall slam that only it can convert into a ground pound. Give at most two moves a followUp, and make each sequel feel like it belongs to its parent and nothing else. Follow-ups never nest.`;
 const COMBO_NOTE = `The engine rewards real routes: light normals gatling into heavier normals, heavier normals cancel into specials, a launcher starts a juggle, and air buttons continue it. Ground bounces, wall bounces and OTG pickups with low attacks all extend a combo. So the kit needs fast low-commitment normals with short startup and short endlag, at least one launcher, at least one air-capable button, and specials worth cancelling into. A high combo stat means a fast, agile fighter whose buttons come out and recover quickly.`;
 
+async function studioClient(timeout = 700) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const create = window.websim?.chat?.completions?.create;
+    if (typeof create === "function") return create;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return null;
+}
 async function askStudio(system, user) {
-  if (!window.websim?.chat?.completions?.create) throw new Error("AI is unavailable; edit the moves manually.");
-  const completion = await window.websim.chat.completions.create({ messages: [{ role: "system", content: system }, { role: "user", content: user }], json: true });
-  return parseAiJson(completion.content);
+  // The page runtime is quickest, but the editor can open before its AI
+  // surface mounts. Wait briefly, then use the hosted project model instead
+  // of leaving an editor with a dead "AI unavailable" action.
+  const create = await studioClient();
+  if (create) {
+    const completion = await create({ messages: [{ role: "system", content: system }, { role: "user", content: user }], json: true });
+    return parseAiJson(completion.content);
+  }
+  const response = await fetch("/api/forge-chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ system, user })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.content) throw new Error(body.error || "AI is unavailable right now. Please try again.");
+  return parseAiJson(body.content);
+}
+
+// AI outputs are treated as drafts, never as a finished fighter by default.
+// These checks keep a partial response or a grab-bag of unrelated attacks from
+// quietly reaching the editor as a supposedly complete moveset.
+function conceptKitIssues(kit) {
+  if (!Array.isArray(kit)) return ["kit is missing"];
+  const issues = [], names = new Set();
+  if (kit.length < 9 || kit.length > 10) issues.push("kit must contain 9-10 moves");
+  let normals = 0, specials = 0;
+  for (const entry of kit) {
+    const name = String(entry?.name || "").trim().toLowerCase();
+    const category = String(entry?.category || "").toLowerCase();
+    if (!name) issues.push("every move needs a name");
+    else if (names.has(name)) issues.push("move names must be unique");
+    names.add(name);
+    if (category === "normal") normals++; else if (category === "special") specials++; else issues.push("every move needs a normal or special category");
+    if (!String(entry?.intent || "").trim()) issues.push("every move needs a match purpose");
+  }
+  BASIC_BUTTONS.forEach((button, index) => {
+    if (String(kit[index]?.category || "") !== "normal" || String(kit[index]?.name || "").trim().toLowerCase() !== button.toLowerCase()) issues.push(`basic move ${index + 1} must be ${button}`);
+  });
+  if (normals !== 6) issues.push("kit needs exactly 6 basic normals");
+  if (specials < 3 || specials > 4) issues.push("kit needs 3-4 specials");
+  return [...new Set(issues)];
+}
+function combatKitIssues(moves, kit) {
+  if (!Array.isArray(moves)) return ["combat moves are missing"];
+  const issues = [];
+  if (moves.length !== kit.length) issues.push(`expected ${kit.length} combat moves, received ${moves.length}`);
+  for (let index = 0; index < kit.length; index++) {
+    const move = moves[index];
+    if (!move || typeof move !== "object" || Array.isArray(move)) { issues.push(`move ${index + 1} is not an object`); continue; }
+    const expectedName = String(kit[index]?.name || "").trim().toLowerCase();
+    if (String(move.name || "").trim().toLowerCase() !== expectedName) issues.push(`move ${index + 1} must keep the concept name`);
+    if (String(move.category || "") !== String(kit[index]?.category || "")) issues.push(`move ${index + 1} must keep its concept category`);
+    // normalizeMove fills safe frame, variant, visual, behavior, and animation
+    // defaults. Rejecting a draft merely because it omitted one of those
+    // optional details turned a recoverable AI shorthand into a failed forge.
+    // This gate is for actual kit damage: missing, malformed, renamed, or
+    // reordered moves only.
+  }
+  return [...new Set(issues)];
+}
+function conceptKitText(kit) {
+  return kit.map((entry, index) => `${index + 1}. [${entry.category}] ${entry.name} — purpose: ${entry.intent || ""}; look: ${entry.fantasy || ""}${entry.followUp ? `; follow-up: ${entry.followUp}` : ""}`).join("\n");
 }
 
 // ── JavaScript handling ─────────────────────────────────────────────────────
@@ -506,20 +659,58 @@ function validateVisualScript(script) {
 
 // ── Stage 1: the visionary ──────────────────────────────────────────────────
 async function runVisionary(prompt, locked) {
-  const system = `You are the concept designer for an arcade fighting game. You design characters, not numbers: never output frame data, behavior objects, or code. Return only JSON with name, author, style, personality, backstory, emojis (3-5), buttons (3-6), combo (1-5), gameplan (one paragraph on how this fighter is meant to win a round), and kit: an array of 5-7 entries, each { name, category ("normal" or "special"), intent (one sentence on what the move is for in a match), fantasy (one sentence on what it looks like), followUp (a sentence describing an exclusive sequel attack, or null) }. Include 2-3 normals and 3-4 specials. ${COMBO_NOTE}`;
-  const brief = await askStudio(system, `${prompt}\n\n${locked}`);
-  if (!brief || !Array.isArray(brief.kit) || !brief.kit.length) throw new Error("The concept pass returned nothing usable.");
+  const system = `You are the concept designer for an arcade fighting game. You design characters, not numbers: never output frame data, behavior objects, or code. Named characters from games, shows, comics, and other source material are valid inputs, as are inspired-by characters. If the premise names one, recognize its well-known public-facing identity and preserve its signature silhouette, personality, movement, weapon, powers, and motifs; do not replace it with a generic original fighter. Treat the supplied character premise and source cues as a binding character bible. If a source detail is uncertain or absent, stay conservative and use the stated premise instead of inventing an unrelated elemental power, weapon, or lore. Do not write fake quotes or claim an action is canon. Return only JSON with name, author, style, personality, backstory, emojis (3-5), buttons (always 6), combo (1-5), gameplan (one paragraph on how this fighter is meant to win a round), and kit: an array of 9-10 entries, each { name, category ("normal" or "special"), intent (one sentence on what the move is for in a match), fantasy (one sentence on what it looks like), followUp (a sentence describing an exclusive sequel attack, or null) }. The first six entries MUST be exactly these basic buttons in this order: Light Punch, Medium Punch, Heavy Punch, Light Kick, Medium Kick, Heavy Kick. Make them fast, grounded, low-commitment normals with matching punch/kick identity. Add exactly 3-4 specials after them. The kit also needs a launcher, an air option, and 1-2 signature specials. Every move must serve the same character fantasy and use iconic source traits when supplied. ${COMBO_NOTE}`;
+  let brief = await askStudio(system, `${prompt}\n\n${locked}`);
+  let issues = conceptKitIssues(brief?.kit);
+  if (issues.length) {
+    const repairSystem = `You are the lead fighting-game designer repairing an incomplete or incoherent concept kit. Return only a complete replacement JSON object in the original schema. Keep the user's character premise, return 9-10 moves with exactly 6 normals followed by 3-4 specials, and make the first six names exactly Light Punch, Medium Punch, Heavy Punch, Light Kick, Medium Kick, Heavy Kick. Make every move fit one clear fighting style and satisfy every listed validation rule exactly.`;
+    brief = await askStudio(repairSystem, `User premise: ${prompt}\n\nLocked fields: ${locked}\n\nFaulty draft:\n${JSON.stringify(brief)}\n\nValidation failures:\n- ${issues.join("\n- ")}`);
+    issues = conceptKitIssues(brief?.kit);
+  }
+  if (issues.length) throw new Error(`The concept pass is incomplete: ${issues[0]}. Try Generate again.`);
+  return brief;
+}
+
+// A short editorial pass gives the downstream combat and VFX helpers a
+// concrete read on the character. It is deliberately notes-only: it cannot
+// rename moves or alter creator-owned identity fields, so a flaky AI response
+// never destroys an otherwise valid concept draft.
+async function runAiDesigner(brief, source) {
+  const system = `You are the AI designer and character-fidelity editor for a fighting game. Read the supplied fighter concept and source material, then distill what makes this character unmistakable. Named game/show characters and inspired-by fighters are allowed: identify their recognizable public signature tools and mannerisms so the finished CPU and moveset feel like that character. Return only JSON with: characterRead (one paragraph), fightingIdentity (one paragraph describing how they actually fight), signatureCues (3-6 short concrete actions, props, powers, or motifs), visualMotifs (3-5 short visual cues), voiceGuide (one sentence describing how they speak), and guardrails (3-5 rules that prevent generic or out-of-character moves). Never invent canon facts, quotes, or unrelated abilities. Preserve the user's premise and be specific rather than flattering.`;
+  try {
+    const notes = await askStudio(system, `Source material and locked identity:\n${source}\n\nDraft concept:\nCharacter: ${brief.name}\nStyle: ${brief.style}\nPersonality: ${brief.personality}\nBackstory: ${brief.backstory}\nGameplan: ${brief.gameplan || ""}\nMoves:\n${conceptKitText(brief.kit)}`);
+    if (!notes || typeof notes !== "object") return brief;
+    const list = (value, max) => Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, max) : [];
+    brief.designerNotes = {
+      characterRead: String(notes.characterRead || "").trim().slice(0, 700),
+      fightingIdentity: String(notes.fightingIdentity || "").trim().slice(0, 700),
+      signatureCues: list(notes.signatureCues, 6), visualMotifs: list(notes.visualMotifs, 5),
+      voiceGuide: String(notes.voiceGuide || "").trim().slice(0, 260), guardrails: list(notes.guardrails, 5)
+    };
+  } catch {
+    // The concept and combat passes remain useful if this optional helper is
+    // unavailable, including when the page falls back to /api/forge-chat.
+    brief.designerNotes = { characterRead: "Stay faithful to the supplied premise.", fightingIdentity: brief.style || "Use the stated fighting style.", signatureCues: [], visualMotifs: [], voiceGuide: brief.personality || "", guardrails: ["Do not add unrelated powers or weapons."] };
+  }
   return brief;
 }
 
 // ── Stage 2: the combat designer ────────────────────────────────────────────
 async function runCombatDesigner(brief) {
-  const system = `You are the combat designer for an arcade fighting game. A concept designer has handed you a character brief. Turn every entry in their kit into a real move with real frame data. Return only JSON: { "specials": [ ...move objects... ] }. Do NOT include visual.script - an artist writes that afterwards. ${MOVE_MECHANICS_NOTE} ${MOVE_BEHAVIOR_GUIDE} ${WEAPON_NOTE} ${FOLLOW_UP_NOTE} ${COMBO_NOTE}`;
-  const kit = brief.kit.map((entry, index) => `${index + 1}. [${entry.category === "normal" ? "normal" : "special"}] ${entry.name} - ${entry.intent || ""} ${entry.fantasy || ""}${entry.followUp ? ` Follow-up: ${entry.followUp}` : ""}`).join("\n");
-  const user = `Character: ${brief.name}. Style: ${brief.style}. Personality: ${brief.personality}.\nGameplan: ${brief.gameplan || "pressure and convert"}.\nCombo stat: ${brief.combo} of 5.\n\nKit to build:\n${kit}`;
-  const built = await askStudio(system, user);
-  const moves = Array.isArray(built?.specials) ? built.specials : Array.isArray(built) ? built : [];
-  if (!moves.length) throw new Error("The combat pass returned no moves.");
+  const system = `You are the combat designer for an arcade fighting game. Turn EVERY concept entry into one complete move object. Return only JSON: { "specials": [ ...move objects... ] }. The array must have the exact same count, order, names, and categories as the supplied kit. The first six entries are universal six-button basics (Light Punch, Medium Punch, Heavy Punch, Light Kick, Medium Kick, Heavy Kick): they must be grounded unarmed melee normals with matching light/medium/heavy roles, short startup, and no projectile, grapple, launcher, or exotic motion. Each move requires type, category, role, variant, startup, active, endlag, hitstun, visual object, behavior object, and animation object. Do NOT include visual.script - an artist writes that afterwards. Keep mechanics faithful to the character bible and concept brief: each motion, weapon choice, effect, and animation gesture must be recognizable for this fighter, not a generic fighting-game filler. Never bolt on unrelated powers just to vary the list. ${MOVE_MECHANICS_NOTE} ${MOVE_BEHAVIOR_GUIDE} ${WEAPON_NOTE} ${FOLLOW_UP_NOTE} ${COMBO_NOTE}`;
+  const kit = conceptKitText(brief.kit);
+  const notes = brief.designerNotes || {};
+  const user = `Character bible:\n${brief.sourceAnchor || `${brief.name}: ${brief.style}.`}\n\nAI designer notes:\nCharacter read: ${notes.characterRead || "Stay faithful to the premise."}\nFighting identity: ${notes.fightingIdentity || brief.style || "Use the stated style."}\nSignature cues: ${(notes.signatureCues || []).join(", ")}\nVisual motifs: ${(notes.visualMotifs || []).join(", ")}\nGuardrails: ${(notes.guardrails || []).join("; ")}\n\nCharacter: ${brief.name}. Style: ${brief.style}. Personality: ${brief.personality}.\nGameplan: ${brief.gameplan || "pressure and convert"}.\nCombo stat: ${brief.combo} of 5.\n\nKit to build in this exact order:\n${kit}`;
+  let built = await askStudio(system, user);
+  let moves = Array.isArray(built?.specials) ? built.specials : Array.isArray(built) ? built : [];
+  let issues = combatKitIssues(moves, brief.kit);
+  if (issues.length) {
+    const repairSystem = `You are a meticulous combat-data editor. Return only JSON: { "specials": [ ...move objects... ] }. Repair the combat pass so it has one complete move for every concept entry, in the exact supplied order, preserving each name and category. Do not simplify, omit, rename, or add moves. Every move needs valid frame data plus visual, behavior, and animation objects.`;
+    built = await askStudio(repairSystem, `Character: ${brief.name}.\n\nRequired kit:\n${kit}\n\nFaulty combat output:\n${JSON.stringify(built)}\n\nValidation failures:\n- ${issues.join("\n- ")}`);
+    moves = Array.isArray(built?.specials) ? built.specials : Array.isArray(built) ? built : [];
+    issues = combatKitIssues(moves, brief.kit);
+  }
+  if (issues.length) throw new Error(`The combat pass is incomplete: ${issues[0]}. Try Generate again.`);
   return moves;
 }
 
@@ -544,8 +735,33 @@ function weaponMotionFor(move) {
   const entry = WEAPON_BY_ID.get(move.visual?.weapon);
   return entry ? WEAPON_DEFAULT_MOTION[entry.weaponClass] || "swipe" : "swipe";
 }
+
+// The combat pass is AI-authored data. A model will occasionally abbreviate a
+// nested object as a string (for example, `behavior: "swing"`). Repair those
+// shorthands before the librarian writes any nested weapon fields.
+function ensureMoveParts(move) {
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isObject(move.visual)) {
+    const shorthand = String(move.visual || "").trim();
+    move.visual = WEAPON_IDS.has(shorthand) ? { weapon: shorthand } : {};
+  }
+  if (!isObject(move.behavior)) {
+    const shorthand = String(move.behavior || "").trim().toLowerCase();
+    move.behavior = {};
+    if (motions.includes(shorthand)) move.behavior.motion = shorthand;
+    else if (WEAPON_MOTIONS.includes(shorthand)) move.behavior.weaponMotion = shorthand;
+    else if (/swing|slash/.test(shorthand)) move.behavior.weaponMotion = "swipe";
+  }
+  return move;
+}
+
 function runWeaponLibrarian(moves, report) {
   for (const move of moves) {
+    if (!move || typeof move !== "object" || Array.isArray(move)) {
+      report.unarmed.push("Ignored a malformed move from the combat pass.");
+      continue;
+    }
+    ensureMoveParts(move);
     const request = String(move.weaponRequest || move.weapon || move.visual?.weaponRequest || "").trim();
     delete move.weaponRequest;
     if (move.visual) delete move.visual.weaponRequest;
@@ -561,7 +777,6 @@ function runWeaponLibrarian(moves, report) {
       const offhand = findWeapon(offhandRequest);
       if (offhand) { move.visual.weaponOffhand = offhand.id; report.armed.push(`${move.name} off hand: ${offhand.label}`); }
     }
-    move.behavior = move.behavior || {};
     move.behavior.weaponMotion = weaponMotionFor(move);
     if (!(Number(move.reach) > 0)) move.reach = picked.reach;
     report.armed.push(`${move.name}: ${picked.label} (${picked.weaponClass}, ${move.behavior.weaponMotion})`);
@@ -580,7 +795,8 @@ async function runVfxArtist(brief, moves, report) {
     const armed = weapon ? `, ARMED with a ${weapon.label} (${weapon.weaponClass}, ${weapon.grip}) swung ${move.behavior?.weaponMotion || "swipe"}` : "";
     return `${index}. ${move.name} - type ${move.type}, motion ${move.behavior?.motion || "none"}, ${move.startup}/${move.active}/${move.endlag}F, ${move.launcher ? "launcher, " : ""}${move.air ? "air, " : ""}gesture ${move.animation?.gesture || "strike"}, element ${move.behavior?.element || "energy"}${armed}`;
   }).join("\n");
-  const user = `Character: ${brief.name} - ${brief.style}. ${brief.personality}.\n\nMoves to visualize:\n${digest}\n\nGive each move a look that reads as its own attack at a glance. For a move marked ARMED, the weapon sprite is drawn for you - build the effect around the blade path (trails, sparks along the edge, an impact at the tip) rather than covering it. You may also place the weapon yourself with api.weapon(offsetX, offsetY, rotationRadians, lengthPx, opacity) if the program wants to choreograph the swing.`;
+  const notes = brief.designerNotes || {};
+  const user = `Character: ${brief.name} - ${brief.style}. ${brief.personality}.\nAI designer visual motifs: ${(notes.visualMotifs || []).join(", ")}. Signature cues: ${(notes.signatureCues || []).join(", ")}.\n\nMoves to visualize:\n${digest}\n\nGive each move a look that reads as its own attack at a glance and reinforces the character's visual motifs. For a move marked ARMED, the weapon sprite is drawn for you - build the effect around the blade path (trails, sparks along the edge, an impact at the tip) rather than covering it. You may also place the weapon yourself with api.weapon(offsetX, offsetY, rotationRadians, lengthPx, opacity) if the program wants to choreograph the swing.`;
   const art = await askStudio(system, user);
   const visuals = Array.isArray(art?.visuals) ? art.visuals : [];
   for (const entry of visuals) {
@@ -610,32 +826,77 @@ async function runVfxArtist(brief, moves, report) {
   return moves;
 }
 
+// Final helper: once mechanics and visuals are fixed, a CPU designer authors
+// how this specific fighter should pilot them. The result is declarative and
+// references exact move names, so the arena can make deliberate choices rather
+// than guessing from broad archetype heuristics alone.
+async function runComputerAiDesigner(brief, moves) {
+  const system = `You are the final computer-AI designer for an arcade fighting game. The moveset is finished; design a believable CPU pilot for this exact fighter. Return only JSON with archetype (rushdown, zoner, grappler, or balanced), aggression (0-1.2), idealGap (80-500 pixels), blockBias (0.25-1.8), jumpBias (0-1.8), zoneBias (0-2.2), punish (0.25-1.8), patience (0.15-1.5), antiAir (0-1.5), comboCommit (0.25-1.2), preferredMoves (up to 6 exact move names), and avoidMoves (up to 6 exact move names). Pick preferred moves for the fighter's real gameplan: opener, poke, launcher, air ender, punish, or signature tool. Avoid moves that are unsafe or out of character in neutral. Do not invent names, mechanics, or abilities; every name in the two lists must exactly match the finished moveset. Tune the CPU to express personality and source style, with readable choices and occasional mistakes rather than perfect reactions.`;
+  const digest = moves.map((move, index) => `${index}. ${move.name} [${move.category || "auto"}] type=${move.type}, role=${move.role}, startup=${move.startup}F, reach=${move.reach || "auto"}, motion=${move.behavior?.motion || "none"}, air=${move.air ? "yes" : "no"}, launcher=${move.launcher ? "yes" : "no"}`).join("\n");
+  const user = `Character bible: ${brief.sourceAnchor || brief.prompt || brief.style}\nCharacter: ${brief.name}. Style: ${brief.style}. Personality: ${brief.personality}. Gameplan: ${brief.gameplan || ""}\n\nFinished moveset:\n${digest}`;
+  const fallback = { archetype: fighterArchetypeHint(moves), aggression: .74, idealGap: 205, blockBias: 1, jumpBias: .85, zoneBias: .75, punish: 1, patience: .6, antiAir: .72, comboCommit: .72, preferredMoves: [], avoidMoves: [] };
+  try {
+    const raw = await askStudio(system, user);
+    const names = new Set(moves.map((move) => String(move.name || "").trim().toLowerCase()));
+    const pickNames = (value) => Array.isArray(value) ? value.map((name) => String(name || "").trim()).filter((name) => names.has(name.toLowerCase())).slice(0, 6) : [];
+    return { ...fallback, ...raw, preferredMoves: pickNames(raw?.preferredMoves), avoidMoves: pickNames(raw?.avoidMoves) };
+  } catch { return fallback; }
+}
+function fighterArchetypeHint(moves) {
+  const signature = moves.filter((move) => !/^(?:light|medium|heavy) (?:punch|kick)$/i.test(String(move.name || ""))), total = signature.length || moves.length || 1;
+  const ranged = signature.filter((move) => ["projectile", "trap", "freeze", "pillar", "bomb", "gun"].includes(move.type)).length / total, grapples = signature.filter((move) => move.type === "grapple").length / total, fast = signature.filter((move) => Number(move.startup) <= 8).length / total;
+  return ranged >= .5 ? "zoner" : grapples >= .34 ? "grappler" : fast >= .5 ? "rushdown" : "balanced";
+}
+function enforceBasicButtons(moves) {
+  return moves.map((move, index) => {
+    const name = BASIC_BUTTONS[index];
+    if (!name || String(move?.name || "").trim().toLowerCase() !== name.toLowerCase()) return move;
+    const punch = index < 3, tier = index % 3, role = `${["light", "medium", "heavy"][tier]}-${punch ? "punch" : "kick"}`;
+    move.name = name; move.category = "normal"; move.type = "melee"; move.role = role; move.variant = ["light", "medium", "heavy"][tier]; move.launcher = false; move.air = false; move.crouch = false;
+    move.startup = [4, 6, 9, 5, 7, 10][index]; move.active = Math.max(2, Number(move.active) || 3); move.endlag = [10, 12, 18, 11, 15, 20][index]; move.hitstun = Math.max(10, Number(move.hitstun) || 12);
+    move.behavior = { ...(move.behavior || {}), motion: "none", speed: 0, radius: 0, shots: 1 };
+    move.visual = { ...(move.visual || {}), weapon: "", weaponOffhand: "" };
+    return move;
+  });
+}
+
 $("#generate-fighter").onclick = async () => {
-  const prompt = $("#character-prompt").value.trim() || "Original arcade fighter";
+  const prompt = $("#character-prompt").value.trim() || currentFighter?.prompt || "Original arcade fighter";
   if (prompt.length < 8) { setStatus("Give the forge a little more to work with.", true); return; }
   const button = $("#generate-fighter"); button.disabled = true;
   const report = { repaired: [], failed: [] };
   try {
-    const identityNote = `Creator-controlled fields are locked during this edit. Do not change the character name (${$("#character-name").value.trim() || currentFighter?.name || "blank"}), author (${$("#character-author").value.trim() || currentFighter?.author || "Forge Author"}), or portrait.`;
+    const currentKit = collectMoves().map((move) => `${move.name} (${move.type}${move.air ? ", air" : ""}${move.launcher ? ", launcher" : ""})`).join("; ");
+    const livePersonality = $("#character-personality").value.trim() || currentFighter?.config?.personality || "not yet specified";
+    const liveBackstory = $("#character-backstory").value.trim() || currentFighter?.config?.backstory || "not yet specified";
+    const identityNote = `Creator-controlled fields are locked during this edit. Do not change the character name (${$("#character-name").value.trim() || currentFighter?.name || "blank"}), author (${$("#character-author").value.trim() || currentFighter?.author || "Forge Author"}), or portrait.\n\nCharacter bible: the user premise is the source of truth: "${prompt}". Existing style: "${currentFighter?.config?.style || "not yet specified"}". Personality: "${livePersonality}". Backstory: "${liveBackstory}". Existing moves, if any: ${currentKit || "none"}. Preserve recognisable signature tools and combat personality; only add a move when it directly follows from this bible.`;
     const assetRequestGuide = `If a move truly needs a custom uploaded sprite, add an assetRequests entry with kind, moveIndex, moveName, title, prompt, and reason. This is a request for the creator, not a URL. Do not request an image for ordinary punches, kicks, projectiles, or effects that read fine with the existing VFX bank and visual.emoji.`;
 
     setStatus("Concept designer is sketching the fighter\u2026");
-    const brief = await runVisionary(prompt, `${identityNote}`);
+    const brief = await runVisionary(prompt, identityNote);
+    brief.sourceAnchor = identityNote;
+
+    setStatus("AI designer is locking the character's identity\u2026");
+    await runAiDesigner(brief, identityNote);
 
     setStatus(`Combat designer is building ${brief.kit.length} moves\u2026`);
     const built = await runCombatDesigner(brief);
 
     const armedReport = { armed: [], unarmed: [] };
     runWeaponLibrarian(built, armedReport);
+    enforceBasicButtons(built);
     if (armedReport.armed.length) setStatus(`Armourer fitted ${armedReport.armed.length} move${armedReport.armed.length > 1 ? "s" : ""} from the weapon rack\u2026`);
 
     setStatus("VFX artist is drawing the effects\u2026");
     await runVfxArtist(brief, built, report).catch((error) => { report.failed.push(`visual pass: ${error.message}`); });
 
+    setStatus("AI designer is teaching the computer pilot\u2026");
+    const computerAi = await runComputerAiDesigner(brief, built);
+
     const lockedName = $("#character-name").value.trim() || currentFighter?.name || "";
     const lockedAuthor = $("#character-author").value.trim() || currentFighter?.author || "Forge Author";
     const lockedPortrait = portraitUrl || currentFighter?.portrait_url || null;
-    const raw = { ...brief, specials: built, assetRequests: [] };
+    const raw = { ...brief, specials: built, ai: computerAi, assetRequests: [] };
     void assetRequestGuide;
     const made = sanitizeFighter(raw, normalizeMove, collectData());
     // Model-provided URLs are never trusted as uploads. A request is only a
@@ -647,7 +908,7 @@ $("#generate-fighter").onclick = async () => {
     made.name = lockedName || made.name;
     made.author = lockedAuthor || made.author;
     portraitUrl = lockedPortrait;
-    $("#character-name").value = made.name; $("#character-author").value = made.author; $("#character-personality").value = made.personality; $("#character-backstory").value = made.backstory; $("#character-buttons").value = String(made.buttons); $("#character-combo").value = String(made.combo); $("#combo-value").textContent = comboLabel($("#character-combo").value); $("#character-emojis").value = made.emojis.join(" ");
+    $("#character-name").value = made.name; $("#character-author").value = made.author; $("#character-personality").value = made.personality; $("#character-backstory").value = made.backstory; $("#character-buttons").value = String(made.buttons); $("#character-combo").value = String(made.combo); $("#combo-value").textContent = comboLabel($("#character-combo").value); if (made.smartness) { $("#character-smartness").value = String(made.smartness); $("#smartness-value").textContent = smartnessLabel(made.smartness); } if (made.aggression) { $("#character-aggression").value = String(made.aggression); $("#aggression-value").textContent = aggressionLabel(made.aggression); } if (made.defense) { $("#character-defense").value = String(made.defense); $("#defense-value").textContent = defenseLabel(made.defense); } if (made.speed) { $("#character-speed").value = String(made.speed); $("#speed-value").textContent = speedLabel(made.speed); } $("#character-emojis").value = made.emojis.join(" ");
     $("#normal-list").innerHTML = ""; $("#special-list").innerHTML = "";
     // The model tags each move's category; fall back to a heuristic for moves
     // that skip it so the split always makes sense even if the model forgets.
@@ -660,6 +921,7 @@ $("#generate-fighter").onclick = async () => {
     // Say plainly what the artist's code did, rather than quietly swapping in a
     // fallback and calling it a success.
     const notes = [];
+    if (computerAi?.preferredMoves?.length) notes.push(`CPU pilot tuned around ${computerAi.preferredMoves[0]}`);
     if (armedReport.armed.length) notes.push(`armed ${armedReport.armed.length} move${armedReport.armed.length > 1 ? "s" : ""} (${armedReport.armed[0]})`);
     if (report.repaired.length) notes.push(`repaired ${report.repaired.length} visual program${report.repaired.length > 1 ? "s" : ""}`);
     if (report.failed.length) notes.push(`${report.failed.length} fell back to a generated effect (${report.failed[0]})`);
@@ -677,7 +939,6 @@ async function regenerateSingleMove(row) {
   const category = row.dataset.category === "normal" ? "normal" : "special";
   const button = row.querySelector(".generate-move");
   const existingName = String(readValue(row, "name") || "").trim();
-  if (!window.websim?.chat?.completions?.create) { setStatus("AI is unavailable; edit this move manually.", true); return; }
   button.disabled = true; button.textContent = "\u2026";
   try {
     const data = collectData();
@@ -685,17 +946,18 @@ async function regenerateSingleMove(row) {
       .filter((sibling) => sibling !== row)
       .map((sibling) => String(readValue(sibling, "name") || "").trim())
       .filter(Boolean);
-    const system = `Design a single ${category} move for an original arcade fighting-game character. Return only JSON with one key, "move", holding the move object. ${MOVE_SCHEMA_NOTE} ${MOVE_BEHAVIOR_GUIDE} ${WEAPON_NOTE} ${FOLLOW_UP_NOTE}`;
+    const system = `Design a single ${category} move for an arcade fighting-game character, including a character adapted from a named game or show. The supplied character bible is binding: make the move read as this fighter specifically, using their recognizable signature gear or movement when supplied, and do not substitute a generic genre archetype. Return only JSON with one key, "move", holding the move object. ${MOVE_SCHEMA_NOTE} ${MOVE_BEHAVIOR_GUIDE} ${WEAPON_NOTE} ${FOLLOW_UP_NOTE}`;
     const context = [
       `Character: ${data.name || "unnamed fighter"}.`,
+      `Character bible: ${$("#character-prompt").value.trim() || currentFighter?.prompt || data.style || "Use only the stated fighter identity."}`,
       data.style ? `Concept: ${data.style}.` : "",
       data.personality ? `Personality: ${data.personality}.` : "",
       `This move's category is fixed as "${category}".`,
       existingName ? `Keep the move named "${existingName}" and design around that name.` : "Invent a fitting name.",
-      siblingNames.length ? `Avoid repeating or closely resembling these other moves this fighter already has: ${siblingNames.join(", ")}.` : ""
+      siblingNames.length ? `Avoid repeating or closely resembling these other moves this fighter already has: ${siblingNames.join(", ")}.` : "",
+      "Use a motion, weapon, visual effect, and gesture that follow the character bible. Do not add generic unrelated powers just to make the move flashy."
     ].filter(Boolean).join(" ");
-    const completion = await window.websim.chat.completions.create({ messages: [{ role:"system", content:system }, { role:"user", content:context }], json:true });
-    const raw = parseAiJson(completion.content);
+    const raw = await askStudio(system, context);
     const moveData = raw && typeof raw === "object" && raw.move ? raw.move : raw;
     if (existingName) moveData.name = existingName;
     moveData.category = category;
