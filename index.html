@@ -16,6 +16,7 @@
         <nav class="tabs" aria-label="Fighter Forge sections">
           <span class="tab active"><span>01</span>SELECT</span>
           <a class="tab" href="editor.html"><span>02</span>EDITOR ↗</a>
+          <a class="tab" href="stages.html"><span>03</span>STAGES ↗</a>
         </nav>
         <div class="top-status"><button id="sfx-toggle" class="sfx-toggle" type="button" aria-pressed="true" title="Toggle sound">♪ SOUND</button><i></i><span>SIMULATION ONLINE</span><b id="fighter-count">1 FIGHTER</b></div>
       </header>
@@ -57,6 +58,13 @@
                 <div id="roster" class="roster" role="listbox" aria-label="Fighter roster" tabindex="0"></div>
               </div>
               <aside id="dossier" class="dossier" aria-live="polite"></aside>
+            </div>
+            <div class="stage-picker">
+              <div class="stage-picker-head"><strong>STAGE</strong><small id="stage-status">Default arena</small></div>
+              <div id="stage-strip" class="stage-strip" role="listbox" aria-label="Battle stages"></div>
+              <div class="stage-picker-actions">
+                <a class="secondary" href="stages.html">STAGE EDITOR <span>↗</span></a>
+              </div>
             </div>
             <div class="select-actions">
               <a class="secondary create-fighter-link" href="editor.html">CREATE <span>↗</span></a>

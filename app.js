@@ -1,6 +1,7 @@
 import { getVfx, framePath, VFX_DEFAULTS, VFX_IDS } from "./vfx-data.js";
 import { parseAiJson, sanitizeFighter, buildFighterModule, extractEmojis } from "./fighter-code.js";
-import { playSfx, panFromX, toggleSfxMuted, isSfxMuted } from "./sfx.js";
+import { playSfx, panFromX, toggleSfxMuted, isSfxMuted, primeSfx } from "./sfx.js";
+import { WEAPON_BASE, WEAPON_IDS, WEAPON_BY_ID, WEAPON_MOTIONS, WEAPON_DEFAULT_MOTION } from "./weapon-data.js";
 
 const $ = (s) => document.querySelector(s);
 const arena = $("#arena"), ctx = arena.getContext("2d");
@@ -14,6 +15,9 @@ const kungFuMan = {
 let fighters = [kungFuMan], selected = [kungFuMan.id, kungFuMan.id], activeSlot = 0;
 let cursor = 0, rosterColumns = 1;
 let spriteSheet = null, spriteThumbs = {};
+// Where each fighter lives on the source sheet, and which way that art faces:
+// 1 for art already drawn facing right, -1 for art drawn facing left.
+const SPRITE_CROPS = { kung:{ x:225, y:0, w:300, h:415, facing:1 }, cyber:{ x:905, y:0, w:375, h:415, facing:-1 } };
 let battle = null, lastFrame = 0, comboReadoutTimer = 0, moveCalloutTimer = 0;
 const FIGHT_START_LEFT = 480, FIGHT_START_RIGHT = 800;
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c])); }
@@ -81,7 +85,7 @@ function renderDossier(fighter) {
     const tags = [
       isLauncher(move) ? "LAUNCHER" : "", isGrapple(move) ? "GRAB" : "",
       isGun(move) ? "GUN" : isRanged(move) ? "RANGED" : "",
-      isWallSlam(move) ? "WALL SLAM" : "", isSpin(move) ? "SPIN" : "",
+      isWallSlam(move) ? "WALL SLAM" : "", isSpin(move) ? "SPIN" : "", move?.followUp ? "FOLLOW-UP" : "",
       isFlyIn(move) ? "FLY-IN" : "", isGroundPound(move) ? "POUND" : "",
       isDiveKick(move) ? "DIVE" : "", multi ? `${multi.hits} HITS` : ""
     ].filter(Boolean);
@@ -109,6 +113,7 @@ function renderDossier(fighter) {
 }
 
 function assignFighter(id, slot = activeSlot) {
+  primeSfx();
   playSfx("menuSelect", { volume: .7 });
   selected[slot] = id;
   activeSlot = slot === 0 ? 1 : 0;
@@ -514,13 +519,23 @@ function runVisualScript(state, x, y, size, active, progress) {
       ctx.beginPath(); ctx.arc(baseX + cx, baseY + cy, Math.max(1, radius), 0, Math.PI * 2); ctx.fill(); ctx.restore();
     },
     glow: (stroke = v.color, blur = size * .4) => { ctx.shadowColor = stroke; ctx.shadowBlur = Math.max(0, Math.min(80, Number(blur) || 0)); },
-    asset: (id, ox = 0, oy = 0, drawSize = size * 2, opacity = 1, rotation = 0) => { if (VFX_IDS.has(id)) drawVfxAsset(id, state.t * (Number(v.vfxFps) || 18), baseX + ox, baseY + oy, Math.max(20, Math.min(280, Number(drawSize) || size)), alpha(opacity), rotation); }
+    asset: (id, ox = 0, oy = 0, drawSize = size * 2, opacity = 1, rotation = 0) => { if (VFX_IDS.has(id)) drawVfxAsset(id, state.t * (Number(v.vfxFps) || 18), baseX + ox, baseY + oy, Math.max(20, Math.min(280, Number(drawSize) || size)), alpha(opacity), rotation); },
+    // Draw this move's weapon wherever the program wants it, so an author can
+    // choreograph the swing themselves instead of taking the default arc.
+    weapon: (ox = 0, oy = 0, rotation = 0, length = 0, opacity = 1) => {
+      const image = weaponImage(v.weapon); if (!image) return;
+      const entry = WEAPON_BY_ID.get(v.weapon);
+      const width = Math.max(40, Math.min(260, Number(length) || entry.reach * .82));
+      const height = width * (image.naturalHeight / Math.max(1, image.naturalWidth));
+      ctx.save(); ctx.globalAlpha = alpha(opacity); ctx.translate(baseX + ox, baseY + oy); ctx.rotate(Number(rotation) || 0);
+      ctx.drawImage(image, -width * .18, -height * .5, width, height); ctx.restore();
+    }
   };
   const fn = compileVisualScript(script); if (!fn) return false;
   try { ctx.save(); ctx.shadowBlur = 0; fn(api, state.t, progress, active, size, v.color, v.secondary, move, Math); ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.restore(); return true; }
   catch { ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.restore(); return false; }
 }
-function normalizeMove(move, fighterConfig = {}) {
+function normalizeMove(move, fighterConfig = {}, depth = 0) {
   const raw = typeof move === "string" ? { name: move, type: "melee" } : (move || {});
   const type = ["melee", "projectile", "combo", "trap", "grapple", "freeze", "teleport", "pillar", "bomb", "gun"].includes(raw.type) ? raw.type : "melee";
   const visualInput = typeof raw.visual === "string" ? { effect: raw.visual } : (raw.visual || {});
@@ -560,6 +575,20 @@ function normalizeMove(move, fighterConfig = {}) {
   behavior.gravity = clampNumber(behavior.gravity, -1600, 1600, 0);
   if (Number(behavior.hits) > 1) behavior.hits = Math.round(clampNumber(behavior.hits, 2, 10, 4));
   if (behavior.hitInterval != null) behavior.hitInterval = clampNumber(behavior.hitInterval, .04, .2, .07);
+  // A move may equip a weapon from the library; anything unrecognised is
+  // simply dropped rather than drawn as a missing image.
+  visual.weapon = WEAPON_IDS.has(String(raw.visual?.weapon || "")) ? String(raw.visual.weapon) : "";
+  // A second weapon in the off hand. Only meaningful alongside a main hand, so
+  // a stray offhand id on an unarmed move is dropped.
+  visual.weaponOffhand = visual.weapon && WEAPON_IDS.has(String(raw.visual?.weaponOffhand || "")) ? String(raw.visual.weaponOffhand) : "";
+  visual.weaponScale = clampNumber(raw.visual?.weaponScale, .35, 1.8, 1);
+  behavior.weaponMotionOffhand = WEAPON_MOTIONS.includes(String(raw.behavior?.weaponMotionOffhand || "").toLowerCase()) ? String(raw.behavior.weaponMotionOffhand).toLowerCase() : "";
+  behavior.weaponMotion = WEAPON_MOTIONS.includes(String(raw.behavior?.weaponMotion || "").toLowerCase())
+    ? String(raw.behavior.weaponMotion).toLowerCase()
+    : (visual.weapon ? WEAPON_DEFAULT_MOTION[WEAPON_BY_ID.get(visual.weapon).weaponClass] || "swipe" : "");
+  // A weapon has physical length, so an armed move reaches further than a fist
+  // unless the author already said otherwise.
+  const weaponReach = visual.weapon && !(Number(raw.reach) > 0) ? WEAPON_BY_ID.get(visual.weapon).reach : Number(raw.reach) || 0;
   if (behavior.motion === "wall-slam") behavior.carrySpeed = clampNumber(behavior.carrySpeed, 420, 1500, 900);
   if (behavior.motion === "multi-uppercut") behavior.rise = clampNumber(behavior.rise, 120, 620, 300);
   if (behavior.motion === "fly-in") { behavior.flySpeed = clampNumber(behavior.flySpeed ?? behavior.speed, 320, 1100, 620); behavior.flyHeight = clampNumber(behavior.flyHeight, 0, 260, 96); }
@@ -571,8 +600,13 @@ function normalizeMove(move, fighterConfig = {}) {
   behavior.orbitSpeed = clampNumber(behavior.orbitSpeed, -12, 12, 3.5);
   behavior.returnDelay = clampNumber(behavior.returnDelay, .15, 1.5, .62);
   const moveName = String(raw.name || "").toLowerCase();
-  const rapidJab = behavior.motion === "rapid-jab" || Number(behavior.rapidHits) > 1 || /rapid|ora|barrage|flurry|rush/.test(moveName) && /jab|punch|fist|barrage|rush/.test(moveName);
-  const diveKick = behavior.motion === "dive-kick" || /dive.?kick|meteor kick|stomp kick/.test(moveName);
+  // Name heuristics exist to rescue a move whose author never said what it is.
+  // They must never overrule a motion that was declared outright, and they match
+  // on whole words - "Wall Crusher" is not a rush, and was quietly becoming one.
+  const declaredMotion = allowedMotion.includes(String(raw.behavior?.motion || "").toLowerCase()) ? String(raw.behavior.motion).toLowerCase() : null;
+  const rapidJab = behavior.motion === "rapid-jab" || Number(behavior.rapidHits) > 1
+    || (!declaredMotion && /\b(?:rapid|ora|barrage|flurry|rush)\b/.test(moveName) && /\b(?:jab|jabs|punch|punches|fist|fists|barrage|rush)\b/.test(moveName));
+  const diveKick = behavior.motion === "dive-kick" || (!declaredMotion && /\bdive.?kick\b|\bmeteor kick\b|\bstomp kick\b/.test(moveName));
   if (rapidJab) behavior.motion = "rapid-jab";
   if (diveKick) behavior.motion = "dive-kick";
   behavior.rapidHits = rapidJab ? Math.round(clampNumber(behavior.rapidHits, 2, 8, 5)) : 1;
@@ -588,7 +622,12 @@ function normalizeMove(move, fighterConfig = {}) {
   animation.intensity = clampNumber(animation.intensity, .45, 1.6, moveAnimationDefaults[type].intensity);
   animation.gesture = String(animation.gesture || ({ melee:"palm", projectile:"cast", combo:"spin", grapple:"clinch", freeze:"cast", teleport:"blink", pillar:"slam", trap:"rune", bomb:"bomb" }[type] || "strike")).toLowerCase().slice(0, 24);
   animation.transform = normalizeFreeTransform(animation.transform);
-  return { ...raw, type, name: String(raw.name || "Unnamed Move").slice(0, 28), role: String(raw.role || "auto"), launcher: raw.launcher === true || raw.role === "launcher", air: raw.air === true || diveKick, juggle: Math.round(clampNumber(raw.juggle, 1, 15, raw.type === "combo" ? 3 : 4)), visual, behavior, animation };
+  // A follow-up is a second move that only exists as a sequel to this one:
+  // land the parent, and a short window opens where the sequel is available.
+  // Nesting stops at one level so a chain of follow-ups cannot recurse.
+  const followUp = raw.followUp && depth < 1 ? normalizeMove({ ...raw.followUp, followUp: null }, fighterConfig, depth + 1) : null;
+  const followUpWindow = followUp ? clampNumber(raw.followUpWindow, .18, 1.2, .55) : 0;
+  return { ...raw, ...(weaponReach > 0 ? { reach: weaponReach } : {}), type, name: String(raw.name || "Unnamed Move").slice(0, 28), role: String(raw.role || "auto"), launcher: raw.launcher === true || raw.role === "launcher", air: raw.air === true || diveKick, juggle: Math.round(clampNumber(raw.juggle, 1, 15, raw.type === "combo" ? 3 : 4)), followUp, followUpWindow, visual, behavior, animation };
 }
 const rebuiltKungFuConfig = {
   name: "Kung Fu Man",
@@ -625,6 +664,12 @@ const RULES = {
   meterMax: 100, superCost: 100, exCost: 35,
   meterOnDealt: .55, meterOnTaken: .95, meterOnBlocked: .38, meterOnWhiff: .8,
   guardMax: 100, guardRegen: 23, guardCostBase: 2.2, guardCostScale: .85, guardImmuneAfterBreak: 1.6,
+  // Guard push: the defender's answer to a blockstring. It costs meter, shoves
+  // the attacker out of range, and buys back a slice of guard - so holding
+  // block is a choice with an exit, not a slow loss.
+  pushblockCost: 20, pushblockPush: 560, pushblockCooldown: .85, pushblockGuardRefund: 14,
+  // How worn down the guard has to get before the AI stops trusting it.
+  guardPanicRatio: .46, guardStreakLimit: 3,
   guardBreakStun: 1.05, chipRatio: .12, blockPushback: 190, blockstunRatio: .74,
   // Long combos are a style flex, not a kill: damage scales down hard and
   // bottoms out low, so a 40-hit route does less than four clean hits.
@@ -633,6 +678,10 @@ const RULES = {
   juggleGravityStep: .045, maxJuggleGravity: 1.9, juggleStart: .62,
   juggleBudget: 46, juggleCostDefault: 1, launchHeight: 760,
   techWindow: .16, hardKnockdown: .92, softKnockdown: .58, wakeupInvuln: .3,
+  // Bounces are the connective tissue of a long route: each one is a free
+  // extension, so each is limited to once per combo.
+  groundBounceHeight: 560, wallBounceSpeed: 560, wallBounceHeight: 600,
+  bounceJuggle: 22, otgWindow: .5, otgJuggle: 14,
   counterDamage: 1.35, counterHitstun: 1.45,
   gravity: 1700, koSlowmo: .26
 };
@@ -650,7 +699,13 @@ function addShake(power) { if (battle) battle.shake = Math.max(battle.shake || 0
 function addHitstop(seconds) { if (battle) battle.hitstop = Math.max(battle.hitstop || 0, seconds); }
 function gainMeter(f, amount) { if (f) f.meter = Math.min(RULES.meterMax, (f.meter || 0) + amount); }
 function spendMeter(f, amount) { if (!f || (f.meter || 0) < amount) return false; f.meter -= amount; return true; }
-function resetCombo(f) { f.combo.timer = 0; f.combo.count = 0; f.combo.target = null; f.combo.scale = 1; f.combo.damage = 0; }
+function resetCombo(f) {
+  // Every extender the victim spent surviving this combo is refunded when the
+  // combo ends, so the next one gets the same tools.
+  const victim = f.combo.target;
+  if (victim) { victim.bounceUsed = false; victim.wallBounceUsed = false; victim.otgUsed = false; victim.groundBouncePending = 0; }
+  f.combo.timer = 0; f.combo.count = 0; f.combo.target = null; f.combo.scale = 1; f.combo.damage = 0;
+}
 
 function fighterArchetype(me) {
   const moves = combatMoves(me), total = moves.length || 1;
@@ -712,7 +767,12 @@ function makeCombatant(fighter,x,dir) {
   const examplePenalty = fighter.example ? .08 : 0, skill = Math.min(.9, Math.max(.48, .6 + (aptitude - 2) * .05 - examplePenalty + (Math.random() - .5) * .07));
   const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null, grappleLock:0,
     meter:0, guard:RULES.guardMax, guardBroken:0, guardImmune:0, wallSlam:null, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
-    combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.round(14 + aptitude * 7) } };
+    groundBouncePending:0, bounceUsed:false, wallBounceUsed:false, otgUsed:false, followUpWindow:null, pushblockCd:0, guardStreak:0,
+    combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.round(8 + aptitude * 8) } };
+  // A high combo stat is not just a longer counter - it is a faster, lighter
+  // fighter. Agility scales startup, recovery, footspeed and jump arc, so the
+  // combo-heavy blueprints actually move like combo characters.
+  c.agility = Math.min(1.42, Math.max(.82, .88 + (aptitude - 2) * .075));
   const archetype = fighterArchetype(c);
   c.ai = { skill, archetype, profile:{ ...ARCHETYPES[archetype] }, lastMoveKey:"", hesitation:0,
     intent:"neutral", intentTimer:0, think:Math.random() * .1, reaction:Math.max(.075, .27 - skill * .21),
@@ -746,9 +806,9 @@ const sfxToggle = $("#sfx-toggle");
 if (sfxToggle) {
   const paintSfxToggle = () => { const off = isSfxMuted(); sfxToggle.textContent = off ? "♪ MUTED" : "♪ SOUND"; sfxToggle.classList.toggle("muted", off); sfxToggle.setAttribute("aria-pressed", String(!off)); };
   paintSfxToggle();
-  sfxToggle.onclick = () => { toggleSfxMuted(); paintSfxToggle(); playSfx("menuOk", { volume: .7 }); };
+  sfxToggle.onclick = () => { primeSfx(); toggleSfxMuted(); paintSfxToggle(); playSfx("menuOk", { volume: .7 }); };
 }
-$("#start-match").onclick = () => { playSfx("menuStart", { volume: .9 }); startBattle(); }; $("#rematch").onclick = () => { playSfx("menuStart", { volume: .9 }); activeSlot = 0; renderRoster(); startBattle(); };
+$("#start-match").onclick = () => { primeSfx(); playSfx("menuStart", { volume: .9 }); startBattle(); }; $("#rematch").onclick = () => { primeSfx(); playSfx("menuStart", { volume: .9 }); activeSlot = 0; renderRoster(); startBattle(); };
 
 function fightTick(dt) {
   if (!battle) return;
@@ -958,49 +1018,80 @@ function buildComboPlan(me, foe) {
   const normals = usable.filter(move => moveCategory(move) === "normal" && !isLauncher(move));
   const specials = usable.filter(move => moveCategory(move) === "special" && !isLauncher(move));
   const launcher = usable.find(isLauncher) || usable.find(isMultiUppercut) || null;
+  const wallSlammer = usable.find(isWallSlam);
   const skill = me.ai?.skill || .64;
+  const aptitude = Number(me.fighter.config?.combo) || 2;
   const depth = Math.max(2, Math.round(RULES.gatlingDepth * (.55 + skill * .7)));
+  const airDepth = Math.max(2, Math.round(RULES.airStringDepth * (.5 + skill * .8)));
+  const room = Math.min(foe.x - RULES.wallLeft, RULES.wallRight - foe.x);
 
-  // ── Stage 1: neutral normals, gatlinged light -> heavy ────────────────────
-  const used = new Set();
-  const gatling = buildGatlingString(normals, depth);
   const steps = [{ action: "dash" }];
-  for (const step of gatling.route) { steps.push(step); used.add(step.move); }
-  let previous = gatling.previous;
+  let previous = null;
 
-  // ── Stage 2: cancel the string into a special ─────────────────────────────
-  // This is the payoff for the neutral string, and the bridge to the launcher.
-  const cancelInto = specials
-    .filter(move => !used.has(move))
-    .sort((a, b) => moveHitCount(b) - moveHitCount(a) || moveFrames(a).startup - moveFrames(b).startup);
-  for (const move of cancelInto) {
-    if (previous && !canLink(previous, move, "ground", "ground", "cancel")) continue;
-    steps.push({ move, cancel: true }); used.add(move); previous = move;
-    break;
-  }
+  // One rep is a complete fighting-game cycle: neutral normals gatling upward,
+  // cancel into a special, launch, then a juggle finished on something heavy.
+  // A heavy air ender spikes them into the floor, and that bounce is what buys
+  // the next rep - which is how a route reaches forty or more hits without
+  // ever repeating the same special over and over.
+  function buildRep(index) {
+    const used = new Set();
+    let opened = false;
 
-  // ── Stage 3: launcher ─────────────────────────────────────────────────────
-  let airborne = false;
-  if (launcher && !used.has(launcher)) {
-    steps.push({ move: launcher, launcher: true }); used.add(launcher); previous = launcher; airborne = true;
-  }
+    const gatling = buildGatlingString(normals, depth);
+    for (const step of gatling.route) {
+      // A new rep starts on the ground: whatever ended the last one has by now
+      // spiked them back down in front of us.
+      if (previous && !canLink(previous, step.move, "ground", step.crouch ? "crouch" : "ground", "gatling")) continue;
+      steps.push({ ...step, rep: index }); used.add(step.move); previous = step.move; opened = true;
+    }
 
-  // ── Stage 4: air string, then an air finisher ─────────────────────────────
-  if (airborne) {
+    const cancelInto = specials
+      .filter(move => !used.has(move))
+      .sort((a, b) => moveHitCount(b) - moveHitCount(a) || moveFrames(a).startup - moveFrames(b).startup);
+    for (const move of cancelInto) {
+      if (previous && !canLink(previous, move, "ground", "ground", "cancel")) continue;
+      steps.push({ move, cancel: true, rep: index }); used.add(move); previous = move; opened = true;
+      break;
+    }
+
+    let airborne = false;
+    if (wallSlammer && !used.has(wallSlammer) && room > 260 && index === 0 && (!launcher || Math.random() < .5)) {
+      steps.push({ move: wallSlammer, wallCarry: true, rep: index }); used.add(wallSlammer); previous = wallSlammer; airborne = true;
+    } else if (launcher && !used.has(launcher)) {
+      steps.push({ move: launcher, launcher: true, rep: index }); used.add(launcher); previous = launcher; airborne = true;
+    }
+    if (!airborne) return opened;
+
     const airPool = comboCandidates(moves, "air", used).sort((a, b) => {
       const rank = (move) => ({ "air-light-punch": 1, "air-medium-punch": 2, "air-medium-kick": 3, "air-special": 4 }[moveRole(move)] || 5);
       return rank(a) - rank(b) || moveFrames(a).startup - moveFrames(b).startup;
     });
-    const airDepth = Math.max(2, Math.round(RULES.airStringDepth * (.5 + skill * .8)));
+    let airCount = 0;
     for (const move of airPool) {
-      if (steps.filter(step => step.air).length >= airDepth) break;
-      if (previous && !canLink(previous, move, previous === launcher ? "ground" : "air", "air", "cancel")) continue;
-      steps.push({ move, air: true }); used.add(move); previous = move;
+      if (airCount >= airDepth) break;
+      const phase = previous === launcher || previous === wallSlammer ? "ground" : "air";
+      if (previous && !canLink(previous, move, phase, "air", "cancel")) continue;
+      steps.push({ move, air: true, rep: index }); used.add(move); previous = move; airCount++;
     }
-    // Finish on the flashiest unused air-capable option when one is left.
-    const finisher = moves.find(move => !used.has(move) && !isRanged(move) && !isGrapple(move) && (move.air === true || isDiveKick(move) || isAirComboMove(move)));
-    if (finisher) steps.push({ move: finisher, air: true, finisher: true });
+    // The ender is deliberately the heaviest air option left: that is the hit
+    // that spikes them, and the spike is what opens the next rep.
+    const enders = moves.filter(move => !isRanged(move) && !isGrapple(move) && (move.air === true || isDiveKick(move) || isAirComboMove(move)))
+      .sort((a, b) => moveWeight(b) - moveWeight(a) || moveHitCount(b) - moveHitCount(a));
+    const ender = enders.find(move => !used.has(move)) || enders[0];
+    if (ender) { steps.push({ move: ender, air: true, finisher: true, rep: index }); previous = ender; }
+    return true;
   }
+
+  // How many reps a fighter is allowed to attempt is their combo aptitude:
+  // a low-combo bruiser gets one clean route, a combo specialist gets the
+  // bounce loops that make a forty-hit string possible.
+  const reps = Math.max(1, Math.min(3, Math.round(1 + (aptitude - 2) * .6)));
+  let built = 0;
+  for (let index = 0; index < reps; index++) {
+    if (buildRep(index)) built++;
+    else break;
+  }
+  if (!built) return null;
 
   const realSteps = steps.filter(step => step.move);
   if (realSteps.length < 2) return null;
@@ -1049,11 +1140,13 @@ function updatePlannedCombo(me, foe, dt) {
   }
   // Execution risk lives at the start of a route, not spread across it. Once
   // the combo is actually connecting the fighter commits, which is what lets a
-  // long confirmed string play out instead of dissolving a few links in.
-  if (!step.linkChecked && me.comboStep > 1) {
+  // long confirmed string play out instead of dissolving a few links in. Only
+  // the first few links are ever rolled for - a route that is already landing
+  // is never abandoned mid-string.
+  if (!step.linkChecked && me.comboStep > 1 && me.comboStep < 5) {
     step.linkChecked = true;
     const confirmed = me.combo.count >= 2 && me.combo.target === foe;
-    const reliability = confirmed ? Math.min(.995, (plan.reliability || .64) + .3) : (plan.reliability || .64);
+    const reliability = confirmed ? .99 : (plan.reliability || .64);
     if (Math.random() > reliability) { cancelComboPlan(me); me.ai.hesitation = .12 + Math.random() * .12; return false; }
   }
   // A cancel skips the previous move's recovery, so the next button is
@@ -1096,7 +1189,11 @@ function aiThink(me, foe) {
   const superReady = me.meter >= RULES.superCost && combatMoves(me).length > 0;
   let intent = "neutral", timer = ai.reaction * (1.4 + Math.random());
 
-  if (openings && distance < 420) intent = "punish";
+  // A fresh knockdown with an unspent OTG is worth walking in for: a low
+  // scrapes them off the floor and the combo carries on.
+  const otgReady = foe.down && !foe.otgUsed && foe.down.t < foe.down.duration - RULES.wakeupInvuln && combatMoves(me).some(move => isLowHit(move, "crouch") || move.crouch === true || isGroundPound(move));
+  if (otgReady && distance < 320) intent = "otg";
+  else if (openings && distance < 420) intent = "punish";
   else if (superReady && distance < 320 && (desperate || openings || foe.hurt > 0 || Math.random() < .18 + ai.skill * .3)) intent = "super";
   else if (foeIsWhiffing(me, foe) && distance < 330) intent = "whiff-punish";
   else if (!foe.grounded && foe.vy > -180 && distance < 260 && Math.random() < .45 + ai.skill * .45) intent = "antiair";
@@ -1125,7 +1222,7 @@ function aiThink(me, foe) {
 function aiWalk(me, target, speed, pose) {
   const delta = target - me.x;
   if (Math.abs(delta) < 18) { me.vx *= .8; me.running = false; me.pose = "idle"; return true; }
-  me.vx = Math.sign(delta) * speed; me.running = speed > 240; me.pose = pose || (me.running ? "run" : "walk");
+  me.vx = Math.sign(delta) * speed * (me.agility || 1); me.running = speed > 240; me.pose = pose || (me.running ? "run" : "walk");
   return false;
 }
 
@@ -1142,11 +1239,13 @@ function aiTryAttack(me, foe, variant, intent, chance = 1) {
 
 function updateAI(me, foe, dt) {
   me.cd = Math.max(0,me.cd-dt); me.hurt=Math.max(0,me.hurt-dt); me.hitstunFrames=me.hurt>0 ? Math.ceil(me.hurt*60) : 0; me.frozen=Math.max(0,me.frozen-dt); me.invuln=Math.max(0,me.invuln-dt); me.recoveryCooldown=Math.max(0,me.recoveryCooldown-dt); me.dodge=Math.max(0,me.dodge-dt); me.jumpCd=Math.max(0,me.jumpCd-dt); me.crouch=Math.max(0,me.crouch-dt); me.blockFlash=Math.max(0,me.blockFlash-dt); me.airComboTimer=Math.max(0,me.airComboTimer-dt);
+  me.pushblockCd=Math.max(0,(me.pushblockCd||0)-dt);
   me.counterFlash=Math.max(0,me.counterFlash-dt); me.superFlash=Math.max(0,me.superFlash-dt); me.techTimer=Math.max(0,me.techTimer-dt); me.backdash=Math.max(0,me.backdash-dt); me.grappleLock=Math.max(0,(me.grappleLock||0)-dt);
   const distance = Math.abs(foe.x-me.x), profile = me.ai.profile, skill = me.ai?.skill || .62;
   if (me.ai) me.ai.hesitation = Math.max(0, me.ai.hesitation - dt);
   if (me.airComboTarget && (me.airComboTimer === 0 || foe.grounded || foe.juggle <= 0)) me.airComboTarget = null;
   if (me.airComboTimer === 0 || foe.grounded) me.airComboJumpQueued = false;
+  if (me.followUpWindow && (me.followUpWindow.t -= dt) <= 0) me.followUpWindow = null;
 
   // ── Locked states ────────────────────────────────────────────────────────
   if (me.down) {
@@ -1157,6 +1256,7 @@ function updateAI(me, foe, dt) {
     if (me.down.t > me.down.duration - RULES.wakeupInvuln) me.invuln = Math.max(me.invuln, .06);
     if (me.down.t >= me.down.duration) {
       me.down = null; me.juggle = 0; me.juggleGravity = 1; me.cd = .05; me.pose = "idle";
+      me.bounceUsed = false; me.wallBounceUsed = false; me.otgUsed = false;
       // Wake-up option: reversal, block, or just stand up.
       const roll = Math.random();
       if (roll < .18 + skill * .22 && distance < 190) aiTryAttack(me, foe, "ground", "launcher", 1);
@@ -1173,6 +1273,17 @@ function updateAI(me, foe, dt) {
   }
   if (me.attackState) return;
   if (me.grappledBy) { me.vx=0; me.pose="grappled"; return; }
+  // The exclusive sequel outranks everything the AI would otherwise consider:
+  // the window is short, and letting it lapse wastes the whole point of the move.
+  if (me.followUpWindow && me.followUpWindow.target === foe && me.hurt <= 0 && !me.down && me.guardBroken <= 0) {
+    const sequel = me.followUpWindow.move;
+    const sequelVariant = !me.grounded ? "air" : me.crouch > 0 ? "crouch" : "ground";
+    if (distance <= moveHitRange(sequel, sequelVariant) + 40 || isRanged(sequel)) {
+      const queued = me.followUpWindow; me.followUpWindow = null;
+      me.cd = 0; me.ai.hesitation = 0;
+      startAttack(me, foe, sequel, null, { followUp: true }); if (me.attackState) { me.attackState.label = `${queued.name} > ${sequel.name}`.toUpperCase(); return; }
+    }
+  }
   if (me.hurt > 0) {
     cancelComboPlan(me); if (!me.wallSlam) me.vx *= .88; me.pose = me.wallSlam ? "wall-carry" : "hurt";
     const lateHitstun = me.hurt <= .16;
@@ -1181,14 +1292,50 @@ function updateAI(me, foe, dt) {
   }
   if (me.blocking) {
     me.blockTimer -= dt; me.vx *= .7; me.pose = me.blockLow ? "block-low" : "block";
-    if (me.blockTimer <= 0) { me.blocking = false; me.blockLow = false; }
+    // Holding guard until it shatters is the worst option available. Once the
+    // meter is worn down or the string has gone on too long, buy the way out.
+    const worn = me.guard / RULES.guardMax < RULES.guardPanicRatio;
+    const strung = (me.guardStreak || 0) >= RULES.guardStreakLimit;
+    if ((worn || strung) && me.meter >= RULES.pushblockCost && me.pushblockCd <= 0 && Math.random() < .55 + skill * .4) {
+      if (tryPushblock(me, foe)) return;
+    }
+    if (me.blockTimer <= 0) {
+      me.blocking = false; me.blockLow = false;
+      // Out of blockstun with the guard nearly gone and nothing to spend: make
+      // space instead of standing there for the next string.
+      if (worn && me.backdash === 0 && distance < 210 && Math.random() < .5 + skill * .35) {
+        me.backdash = .5; me.dodge = .3; me.vx = -me.dir * (340 + skill * 90); me.pose = "evade"; me.guardStreak = 0;
+        playSfx("airBackdash", { pan: panFromX(me.x), volume: .45 });
+        return;
+      }
+    }
     else return;
   }
 
   // ── Reflex layer: runs every frame so blocking still feels reactive ──────
   const threat = threatLevel(me, foe);
   if (threat > .5 && me.cd === 0 && !me.attackState) {
-    const guardBias = profile.blockBias * (me.ai.respect + .3) * (me.guard / RULES.guardMax) * skill;
+    // Confidence in guard falls off sharply, not linearly: a fighter at a
+    // quarter guard should be looking for an escape, not another block.
+    const guardHealth = me.guard / RULES.guardMax;
+    const guardBias = profile.blockBias * (me.ai.respect + .3) * guardHealth * guardHealth * skill;
+    const desperateGuard = guardHealth < RULES.guardPanicRatio || (me.guardStreak || 0) >= RULES.guardStreakLimit;
+    if (desperateGuard && me.cd === 0 && Math.random() < dt * 14 * (.6 + skill)) {
+      // The three real answers to being pinned: a reversal through the gap,
+      // a backdash out of range, or a jump over the top of the string.
+      const reversals = combatMoves(me).filter(move => isLauncher(move) || isMultiUppercut(move));
+      if (reversals.length && distance < 190) {
+        me.invuln = Math.max(me.invuln, .12); me.guardStreak = 0;
+        startAttack(me, foe, reversals[Math.floor(Math.random() * reversals.length)]);
+        return;
+      }
+      if (me.backdash === 0 && !inCorner(me)) {
+        me.backdash = .5; me.dodge = .32; me.vx = -me.dir * (340 + skill * 90); me.pose = "evade"; me.guardStreak = 0;
+        playSfx("airBackdash", { pan: panFromX(me.x), volume: .45 });
+        return;
+      }
+      if (me.jumpCd === 0 && startJump(me, true)) { me.guardStreak = 0; return; }
+    }
     if (Math.random() < dt * 24 * guardBias) {
       // Guess high or low against the incoming attack. Guessing wrong is what
       // makes overheads and sweeps worth throwing.
@@ -1304,6 +1451,15 @@ function executeIntent(me, foe, dt, distance, chainReady) {
       aiWalk(me, foe.x - me.dir * profile.idealGap, 300);
       return;
     }
+    case "otg": {
+      // Only something that hits low can reach them, so crouch first and use it.
+      const lows = combatMoves(me).filter(move => isLowHit(move, "crouch") || move.crouch === true || isGroundPound(move));
+      const low = lows[Math.floor(Math.random() * lows.length)];
+      if (!low) { ai.intent = "neutral"; return; }
+      if (me.cd === 0 && distance <= moveHitRange(low, "crouch")) { me.crouch = .3; startAttack(me, foe, low); return; }
+      aiWalk(me, foe.x - me.dir * 80, 330);
+      return;
+    }
     case "wall-carry": {
       // Drive them toward the nearest wall, then cash out with the slam.
       const slams = combatMoves(me).filter(isWallSlam);
@@ -1406,8 +1562,19 @@ function meleeHitboxConnects(me, foe, state) {
     return Math.abs(foe.x - me.x) <= range && vertical <= verticalWindow + 16;
   }
   const airOk = state.variant === "air" || state.flyIn || state.multiUppercut || foe.grounded;
+  // A downed opponent is lying on the floor. Only something that actually hits
+  // low - a crouching button, a sweep, a ground pound - can reach them, and
+  // only once per knockdown so an OTG pickup is an extension, not a loop.
+  if (foe.down && !canHitDowned(me, foe, state)) return false;
   return horizontal >= -38 && horizontal <= range && vertical <= verticalWindow && diveIsCommitted && airOk;
 }
+// Whether this attack can pick a downed opponent off the ground.
+function canHitDowned(me, foe, state) {
+  if (foe.otgUsed) return false;
+  const move = state.move;
+  return state.variant === "crouch" || isLowHit(move, state.variant) || state.groundPound || state.hitMode === "shockwave";
+}
+
 function scoreMove(move, context) {
   const { me, foe, distance, variant, intent, vertical } = context;
   const reach = moveHitRange(move, variant), frames = moveFrames(move, variant);
@@ -1431,13 +1598,17 @@ function scoreMove(move, context) {
   if (isDashAttack(move)) score += distance > 105 && distance < 330 ? 12 : -5;
   if (isDiveKick(move)) score += variant === "air" && foe.grounded && distance > 90 && distance < 360 ? 19 : -10;
   if (isGroundPound(move)) score += (!me.grounded || distance < 150) && foe.grounded ? 15 : -14;
+  // Pick them up off the floor - but only with something that reaches down.
+  if (foe.down && !foe.otgUsed) score += (variant === "crouch" || isLowHit(move, variant) || isGroundPound(move)) ? 30 : -30;
   if (isFlyIn(move)) score += distance > 220 && distance < 620 ? 18 : -12;
   if (isSpin(move)) score += distance < 170 ? 14 : -8;
   if (isMultiUppercut(move)) score += distance < 165 && foe.grounded ? 20 : -10;
   if (isWallSlam(move)) {
-    // Worth the most when there is room to drive them into something.
+    // Worth the most when there is room to drive them into something, and worth
+    // more still mid-combo: the rebound is a guaranteed extension.
     const room = Math.min(foe.x - RULES.wallLeft, RULES.wallRight - foe.x);
     score += distance < 170 ? (room > 260 ? 20 : 6) : -12;
+    if (foe.hurt > 0 && foe.grounded && room > 240 && !foe.wallBounceUsed) score += 22;
   }
   if (isRapidJab(move)) score += variant !== "air" && distance < 220 ? 13 : -4;
   if (isGrapple(move)) score += (me.grappleLock > 0) ? -40 : distance < 130 ? (foe.blocking ? 26 : 8) : -16;
@@ -1504,6 +1675,33 @@ function startJump(me, running=false, target=null) {
   playSfx(running ? "jumpRun" : "jumpHigh", { pan: panFromX(me.x), volume: .4, cooldown: .1 });
   return true;
 }
+// Guard push. Spend meter mid-blockstun to blow the attacker back out of
+// range: the blockstring ends, a little guard comes back, and whatever route
+// they were running is dead. This is the counter to guard pressure, and the
+// reason a defender is not simply waiting to be broken.
+function tryPushblock(me, foe) {
+  if (!me.blocking || me.guardBroken > 0 || me.pushblockCd > 0) return false;
+  if (me.meter < RULES.pushblockCost) return false;
+  me.meter -= RULES.pushblockCost;
+  me.pushblockCd = RULES.pushblockCooldown;
+  me.guard = Math.min(RULES.guardMax, me.guard + RULES.pushblockGuardRefund);
+  me.guardStreak = 0;
+  me.blockTimer = Math.min(me.blockTimer, .06);
+  const away = foe.x >= me.x ? 1 : -1;
+  foe.vx = away * RULES.pushblockPush;
+  me.vx = -away * RULES.pushblockPush * .3;
+  // Blown out of range mid-string: whatever they were running cannot continue.
+  cancelComboPlan(foe);
+  resetCombo(foe);
+  if (foe.attackState && !foe.attackState.grappled) { foe.attackState.resolved = true; foe.attackState.t = Math.max(foe.attackState.t, foe.attackState.duration - .04); }
+  if (foe.ai) foe.ai.blockedStreak = Math.min(6, foe.ai.blockedStreak + 1);
+  me.effects.push({ kind: "impact", t: .34, x: me.x + away * 40, y: me.y, color: "#8fe4ff", size: 74 });
+  addShake(.14); addHitstop(.05);
+  showBanner("GUARD PUSH", .45, "tech");
+  playSfx("guardCrush", { pan: panFromX(me.x), volume: .5, rate: 1.25 });
+  return true;
+}
+
 function startBlock(me, duration = .5, low = false) {
   if (!me.grounded || me.attackState || me.hurt > 0 || me.recovery || me.down || me.guardBroken > 0) return;
   me.blocking = true; me.blockLow = low; me.blockTimer = Math.max(me.blockTimer, duration);
@@ -1580,8 +1778,11 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
   const baseActive = Math.min(20, Math.max(1, Number(move.active) || defaults.active)), active = rapidJab ? Math.max(baseActive, Math.ceil((rapidHits - 1) * rapidInterval * 60) + 3) : baseActive;
   const baseEndlag = Math.min(90, Math.max(1, Number(move.endlag ?? move.endLag) || defaults.endlag)), baseHitstun = Math.min(60, Math.max(1, Number(move.hitstun ?? move.hitStun) || defaults.hitstun));
   const chargeFrames = charge ? Math.round(clampNumber(move.behavior?.charge, .12, 2.5, .5) * 60) : 0;
-  const variantStartup = (variant === "crouch" ? startup + 2 : variant === "air" ? Math.max(3, startup - 1) : startup) + chargeFrames;
-  const variantEndlag = variant === "air" ? baseEndlag + 3 : variant === "crouch" ? baseEndlag + 2 : baseEndlag;
+  // Agile fighters get their buttons out sooner and recover faster, which is
+  // what actually makes their extra combo ceiling reachable.
+  const agility = me.agility || 1;
+  const variantStartup = Math.max(2, Math.round(((variant === "crouch" ? startup + 2 : variant === "air" ? Math.max(3, startup - 1) : startup) + chargeFrames) / agility));
+  const variantEndlag = Math.max(3, Math.round((variant === "air" ? baseEndlag + 3 : variant === "crouch" ? baseEndlag + 2 : baseEndlag) / agility));
   const variantHitstun = Math.min(60, baseHitstun + (variant === "air" ? 2 : variant === "crouch" ? 1 : 0));
   const totalFrames = variantStartup + active + variantEndlag, duration = totalFrames / 60;
   const baseDamage = rapidJab ? 3.5 : grapple ? 4 : bomb ? 11 : freeze ? 5 : pillar ? 9 : move.type === "combo" ? 10 : projectile ? 8 : 6;
@@ -1596,7 +1797,7 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
   const powerMultiplier = superMove ? 2.35 : exMove ? 1.45 : 1;
   // Spin hits all around the attacker; a ground pound hits by shockwave radius.
   const hitMode = spin ? "omni" : groundPound ? "shockwave" : "normal";
-  me.attackState = { foe, move, visual:move.visual, superMove, exMove, powerMultiplier, multiKind, spin, multiUppercut, flyIn, groundPound, wallSlam, gun, hitMode, flyTravelled:0, shockDone:false, behavior:move.behavior, animation:move.animation, variant, projectile, bomb, charge, grapple, teleport, pillar, freeze, launcher, diveKick, rapidJab, rapidHits, rapidInterval, rapidHitCount:0, nextRapidHitAt:0, dashAttack:isDashAttack(move), comboPlanId:me.comboPlan?.target === foe ? me.comboPlan.id : null, comboStep, linkRetryCount:0, hitConfirmed:false, duration, startup:variantStartup, active, endlag:variantEndlag, hitstun:variantHitstun, totalFrames, t:0, hitAt:variantStartup / 60, finishAt:(variantStartup + Math.max(5, Math.round(active * .62))) / 60, resolved:false, behaviorApplied:false, finished:false, grabbed:false, grapplePhase:"reach", reach:moveReach(move, variant), hitRange:moveHitRange(move, variant), damage:(baseDamage + movePower + variantBonus + Math.min(chainStep,3)*1.6) * (charge ? clampNumber(move.behavior?.chargePower, .7, 2.5, 1.35) : 1) * powerMultiplier, label };
+  me.attackState = { foe, move, isFollowUp:Boolean(mods.followUp), visual:move.visual, superMove, exMove, powerMultiplier, multiKind, spin, multiUppercut, flyIn, groundPound, wallSlam, gun, hitMode, flyTravelled:0, shockDone:false, behavior:move.behavior, animation:move.animation, variant, projectile, bomb, charge, grapple, teleport, pillar, freeze, launcher, diveKick, rapidJab, rapidHits, rapidInterval, rapidHitCount:0, nextRapidHitAt:0, dashAttack:isDashAttack(move), comboPlanId:me.comboPlan?.target === foe ? me.comboPlan.id : null, comboStep, linkRetryCount:0, hitConfirmed:false, duration, startup:variantStartup, active, endlag:variantEndlag, hitstun:variantHitstun, totalFrames, t:0, hitAt:variantStartup / 60, finishAt:(variantStartup + Math.max(5, Math.round(active * .62))) / 60, resolved:false, behaviorApplied:false, finished:false, grabbed:false, grapplePhase:"reach", reach:moveReach(move, variant), hitRange:moveHitRange(move, variant), damage:(baseDamage + movePower + variantBonus + Math.min(chainStep,3)*1.6) * (charge ? clampNumber(move.behavior?.chargePower, .7, 2.5, 1.35) : 1) * powerMultiplier, label };
   if (superMove) {
     // Freeze the screen on the flash so the announcement lands before the
     // move actually moves. Startup is invulnerable, which is the whole
@@ -1717,13 +1918,18 @@ function updateAttack(me, foe, dt) {
         // the launcher and air string that could never connect.
         me.comboPlan.blockstring = true; me.comboPlan.linkRetryCount = 0;
         me.comboStep = state.comboStep + 1;
-        while (me.comboPlan.steps[me.comboStep] && (me.comboPlan.steps[me.comboStep].launcher || me.comboPlan.steps[me.comboStep].air)) me.comboStep++;
+        while (me.comboPlan.steps[me.comboStep] && (me.comboPlan.steps[me.comboStep].launcher || me.comboPlan.steps[me.comboStep].wallCarry || me.comboPlan.steps[me.comboStep].air)) me.comboStep++;
         if (!me.comboPlan.steps[me.comboStep]) cancelComboPlan(me);
       }
       else {
         const juggleAlive = !foe.grounded && foe.juggle > 0 && me.combo.count > 0;
-        const nearLink = (foe.hurt > 0 || juggleAlive) && !foe.recovery && Math.abs(foe.x - me.x) <= state.hitRange + (juggleAlive ? 190 : 52);
-        const retryBudget = juggleAlive ? 4 : 1;
+        // The opening button of a route is thrown while still closing distance,
+        // so a whiff there means "not yet", not "the route is dead". Give the
+        // approach real patience; give a live juggle patience too.
+        const opening = me.combo.count === 0;
+        const nearLink = (opening || foe.hurt > 0 || juggleAlive) && !foe.recovery
+          && Math.abs(foe.x - me.x) <= state.hitRange + (juggleAlive ? 190 : opening ? 240 : 52);
+        const retryBudget = juggleAlive ? 5 : opening ? 5 : 2;
         if (nearLink && (me.comboPlan.linkRetryCount || 0) < retryBudget) {
           me.comboPlan.linkRetryCount = (me.comboPlan.linkRetryCount || 0) + 1;
           me.combo.timer = Math.max(me.combo.timer, .5); me.cd = .02;
@@ -1731,6 +1937,13 @@ function updateAttack(me, foe, dt) {
         else cancelComboPlan(me);
       }
     }
+    // A move with a sequel opens its window the moment it confirms. The sequel
+    // belongs to this move alone: it is not in the normal move pool and cannot
+    // be thrown on its own.
+    if (state.hitConfirmed && state.move?.followUp && !state.isFollowUp) {
+      me.followUpWindow = { move: state.move.followUp, t: state.move.followUpWindow || .55, target: foe, name: state.move.name };
+      me.cd = Math.min(me.cd, .04);
+      showBanner("FOLLOW-UP", .4, "counter"); } else if (state.isFollowUp) me.followUpWindow = null;
     if (state.grappled) releaseGrapple(me, foe); me.attackState=null; me.attack=0; me.pose = me.grounded ? me.crouch > 0 ? "crouch" : "idle" : "jump";
     if (launchJump) { me.airComboJumpQueued=false; me.jumpCd=0; me.cd=0; startJump(me, true, foe); }
   }
@@ -1739,6 +1952,10 @@ function updateCombo(me, dt) {
   // An in-progress route holds its own combo window open; otherwise a long
   // string times out between stages and resets the counter mid-combo.
   if (me.comboPlan && me.combo.count > 0 && me.combo.target === me.comboPlan.target) me.combo.timer = Math.max(me.combo.timer, .6);
+  // Carrying somebody into a wall, or waiting out a spike before it bounces,
+  // is still the same combo - the counter should not time out mid-flight.
+  const carried = me.combo.target;
+  if (carried && me.combo.count > 0 && (carried.wallSlam || carried.groundBouncePending)) me.combo.timer = Math.max(me.combo.timer, .9);
   if (me.airComboTarget && me.airComboTimer > 0 && me.combo.target === me.airComboTarget) me.combo.timer = Math.max(me.combo.timer, .85);
   if (me.combo.timer > 0 && (me.combo.timer -= dt) <= 0) {
     if (me.airComboTarget && me.airComboTimer > 0 && me.combo.target === me.airComboTarget) me.combo.timer = .45;
@@ -1861,6 +2078,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
       addHitstop(.02); addShake(.05);
       resetCombo(me);
       if (me.ai) me.ai.blockedStreak = Math.min(6, me.ai.blockedStreak + 1);
+      foe.guardStreak = (foe.guardStreak || 0) + 1;
       if (foe.ai) foe.ai.respect = Math.max(.15, foe.ai.respect - .06);
       if (foe.guard <= 0 && !(foe.guardImmune > 0)) {
         // Guard crush: a long, fully punishable stun. The pay-off for grinding
@@ -1900,7 +2118,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   foe.hp = Math.max(0, foe.hp - finalDamage);
   foe.damageTaken = (foe.damageTaken || 0) + finalDamage;
   foe.hitstunFrames = appliedHitstun; foe.hurt = appliedHitstun / 60; foe.recoveryAttempted = false;
-  foe.blocking = false; foe.blockLow = false;
+  foe.blocking = false; foe.blockLow = false; foe.guardStreak = 0; foe.lastAttacker = me; foe.followUpWindow = null;
   gainMeter(me, finalDamage * RULES.meterOnDealt);
   gainMeter(foe, finalDamage * RULES.meterOnTaken);
   if (me.ai) { me.ai.blockedStreak = 0; me.ai.hitStreak++; }
@@ -1922,6 +2140,21 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   if (knockback.direction === "down") vertical = -vertical;
   if (Math.abs(vertical) >= 80) { foe.grounded = false; foe.vy = -vertical; }
   if (knockback.groundBounce && wasGrounded) { foe.grounded = false; foe.vy = -Math.max(360, vertical); }
+  // A heavy hit from the air spikes them into the floor. The bounce that comes
+  // back up is the attacker's reward: a fresh juggle to keep the route going.
+  const spikes = knockback.groundBounce === true || state?.diveKick || state?.groundPound
+    || (attackVariant === "air" && (String(move?.variant || "") === "heavy" || finalDamage > 12));
+  if (spikes && !foe.grounded && !foe.bounceUsed) foe.groundBouncePending = 1;
+
+  // Picking a downed opponent up with a low: they pop back into the air and the
+  // combo continues, once per knockdown.
+  if (foe.down) {
+    foe.down = null; foe.otgUsed = true; foe.pendingKnockdown = 0;
+    foe.grounded = false; foe.vy = -Math.max(340, vertical || 380);
+    foe.juggle = Math.max(foe.juggle, RULES.otgJuggle); foe.juggleGravity = Math.max(RULES.juggleStart, (foe.juggleGravity || 1) * .8);
+    me.airComboTarget = foe; me.airComboTimer = Math.max(me.airComboTimer, 2.2); me.combo.timer = Math.max(me.combo.timer, 1.2);
+    showBanner("O.T.G.", .5, "counter"); playSfx("boneCrack", { pan: panFromX(foe.x), volume: .55 });
+  }
 
   // ── Wall slam ────────────────────────────────────────────────────────────
   // Punch them into the wall: they travel to the nearest wall under their own
@@ -1943,13 +2176,20 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   // Getting pinned against a wall should hurt: the body splats back into the
   // attacker with extra hitstun instead of quietly clipping to the boundary.
   const drivenIntoWall = (foe.x <= RULES.wallLeft + 6 && foe.vx < 0) || (foe.x >= RULES.wallRight - 6 && foe.vx > 0);
-  if (drivenIntoWall && horizontal > 240) {
-    foe.vx = -foe.vx * .55; foe.grounded = false; foe.vy = Math.min(foe.vy, -Math.max(300, vertical * .8));
+  if ((drivenIntoWall && horizontal > 240) || (knockback.wallBounce && inCorner(foe))) {
+    // Peeled off the wall. The rebound is comboable - it hands the attacker a
+    // fresh juggle instead of quietly ending the string in the corner.
+    foe.vx = -Math.sign(foe.vx || me.dir) * Math.max(RULES.wallBounceSpeed * .6, Math.abs(foe.vx) * .6);
+    foe.grounded = false; foe.vy = -Math.max(RULES.wallBounceHeight * .55, vertical * .9);
     foe.hurt += .16; foe.hitstunFrames += 10;
     foe.effects.push({ kind: "impact", t: .4, x: foe.x, y: foe.y, color: "#ffffff", size: 78 });
+    if (!foe.wallBounceUsed) {
+      foe.wallBounceUsed = true; foe.pendingKnockdown = 0;
+      foe.juggle = Math.max(foe.juggle, RULES.bounceJuggle); foe.juggleGravity = RULES.juggleStart;
+      me.airComboTarget = foe; me.airComboTimer = Math.max(me.airComboTimer, 2.4); me.combo.timer = Math.max(me.combo.timer, 1.3);
+      showBanner("WALL BOUNCE", .55, "break"); playSfx("boneCrack", { pan: panFromX(foe.x), volume: .7 });
+    }
     addShake(.26); addHitstop(.07);
-  } else if (knockback.wallBounce && inCorner(foe)) {
-    foe.vx = -foe.vx * .82; foe.grounded = false; foe.vy = -Math.max(260, vertical);
   }
 
   if (continuing && knockback.carry !== false && !foe.grappledBy) me.x = Math.max(RULES.wallLeft, Math.min(RULES.wallRight, foe.x - me.dir * 96));
@@ -1974,9 +2214,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
     // A hit landed with no route running: confirm it into one.
     buildComboPlan(me, foe);
   }
-  showComboReadout(me, me.combo.count);
-
-  // ── Juggle state ─────────────────────────────────────────────────────────
+  showComboReadout(me, me.combo.count); // ── Juggle state ─────────────────────────────────────────────────────────
   if (launcher && wasGrounded) {
     foe.grounded = false; foe.runJump = false; foe.y = Math.max(420, foe.y - 54); foe.vy = -Math.max(RULES.launchHeight, vertical);
     foe.airComboHits = 0; foe.juggleGravity = RULES.juggleStart;
@@ -2026,12 +2264,26 @@ function updatePhysics(me, dt) {
     const slam = me.wallSlam; me.wallSlam = null;
     me.hp = Math.max(0, me.hp - slam.damage);
     me.hurt = Math.max(me.hurt, .42); me.hitstunFrames = Math.max(me.hitstunFrames, 25);
-    me.vx = -Math.sign(me.vx || 1) * 260; me.vy = -320; me.grounded = false;
-    me.pendingKnockdown = RULES.hardKnockdown;
+    // The whole point of driving someone into the wall is what happens next:
+    // they rebound off it in a juggle state, guaranteed, so the attacker keeps
+    // the combo instead of watching them slump to the floor.
+    me.vx = -Math.sign(me.vx || 1) * RULES.wallBounceSpeed; me.vy = -RULES.wallBounceHeight; me.grounded = false;
+    me.pendingKnockdown = 0;
+    me.juggle = Math.max(me.juggle, RULES.bounceJuggle); me.juggleGravity = RULES.juggleStart;
+    me.airComboHits = 0; me.wallBounceUsed = true;
+    const slammer = slam.from;
+    if (slammer && slammer.hp > 0) {
+      slammer.airComboTarget = me; slammer.airComboTimer = Math.max(slammer.airComboTimer, 2.6);
+      slammer.airComboJumpQueued = true; slammer.combo.timer = Math.max(slammer.combo.timer, 1.4);
+      // Chase the rebound now - waiting for the next decision tick would let
+      // them peel off the wall and land before anything could meet them.
+      slammer.jumpCd = 0; slammer.cd = 0;
+      if (!slammer.comboPlan && slammer.ai) buildComboPlan(slammer, me);
+      if (slammer.grounded && !slammer.attackState && !slammer.down) startJump(slammer, true, me);
+    }
     me.effects.push({ kind: "impact", t: .5, x: me.x, y: me.y, color: slam.visual?.color || "#ffffff", size: 96, vfxId: slam.visual?.hitVfx });
     playSfx("quake", { pan: panFromX(me.x), volume: .9 }); playSfx("boneCrack", { pan: panFromX(me.x), volume: .6 });
-    addShake(.44); addHitstop(.13); showBanner("WALL SLAM", .7, "break");
-  }
+    addShake(.44); addHitstop(.13); showBanner("WALL SLAM", .7, "break"); }
   if (me.x <= RULES.wallLeft && me.vx < 0) me.vx *= .4;
   if (me.x >= RULES.wallRight && me.vx > 0) me.vx *= .4;
   me.x = Math.max(RULES.wallLeft, Math.min(RULES.wallRight, me.x));
@@ -2042,8 +2294,27 @@ function updatePhysics(me, dt) {
     if (me.y >= RULES.floorY) {
       me.y = RULES.floorY; me.vy = 0; me.grounded = true; me.runJump = false;
       me.juggle = 0; me.airComboHits = 0; me.airComboTarget = null; me.airComboTimer = 0; me.airComboJumpQueued = false;
-      if (!me.pendingKnockdown || (me.hurt <= 0 && me.guardBroken <= 0)) playSfx("land", { pan: panFromX(me.x), volume: .3, cooldown: .08 });
-      if (me.pendingKnockdown && (me.hurt > 0 || me.guardBroken > 0)) {
+      const bouncing = me.groundBouncePending && me.hurt > 0 && !me.bounceUsed && me.guardBroken <= 0;
+      if (!bouncing && (!me.pendingKnockdown || (me.hurt <= 0 && me.guardBroken <= 0))) playSfx("land", { pan: panFromX(me.x), volume: .3, cooldown: .08 });
+      me.groundBouncePending = 0;
+      if (bouncing) {
+        // Spiked into the floor and popped back up. One per combo, so it reads
+        // as a deliberate extender rather than an endless pinball.
+        me.bounceUsed = true; me.pendingKnockdown = 0;
+        me.grounded = false; me.y = RULES.floorY - 6; me.vy = -RULES.groundBounceHeight; me.vx *= .45;
+        me.juggle = Math.max(me.juggle, RULES.bounceJuggle); me.juggleGravity = RULES.juggleStart; me.airComboHits = 0;
+        me.hurt = Math.max(me.hurt, .5); me.hitstunFrames = Math.max(me.hitstunFrames, 30);
+        me.effects.push({ kind: "impact", t: .42, x: me.x, y: RULES.floorY, color: "#ffffff", size: 86 });
+        const bouncer = me.lastAttacker;
+        if (bouncer && bouncer.hp > 0) {
+          bouncer.airComboTarget = me; bouncer.airComboTimer = Math.max(bouncer.airComboTimer, 2.5);
+          bouncer.airComboJumpQueued = bouncer.grounded; bouncer.combo.timer = Math.max(bouncer.combo.timer, 1.35);
+          // The bounce is a free confirm - route the rest of it rather than
+          // leaving the attacker to improvise one button at a time.
+          if (!bouncer.comboPlan && bouncer.ai) buildComboPlan(bouncer, me);
+        }
+        addShake(.3); addHitstop(.09); showBanner("BOUNCE", .5, "break"); playSfx("quake", { pan: panFromX(me.x), volume: .75 });
+      } else if (me.pendingKnockdown && (me.hurt > 0 || me.guardBroken > 0)) {
         // Landing out of hitstun is a knockdown, not an instant recovery. This
         // is the beat that gives the round its rhythm.
         me.wallSlam = null;
@@ -2190,8 +2461,80 @@ function updateHud() {
   if (nameLeft) nameLeft.classList.toggle("charged", a.meter >= RULES.superCost);
   if (nameRight) nameRight.classList.toggle("charged", b.meter >= RULES.superCost);
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGES
+// A battle background is an uploaded image saved to the same account roster as
+// a fighter. Creating and deleting them is the stage workshop's job; the arena
+// only reads the list, remembers which one is chosen, and draws it. A stage
+// that fails to load simply falls back to the built-in arena.
+// ─────────────────────────────────────────────────────────────────────────────
+let stages = [];
+let activeStage = null;
+let stageImage = null;
+
+const STAGE_PREF_KEY = "forge-stage-id";
+function readStagePref() { try { return localStorage.getItem(STAGE_PREF_KEY) || ""; } catch { return ""; } }
+function writeStagePref(id) { try { if (id) localStorage.setItem(STAGE_PREF_KEY, id); else localStorage.removeItem(STAGE_PREF_KEY); } catch { /* storage unavailable */ } }
+
+async function loadStages() {
+  try {
+    const response = await fetch("/api/stages");
+    const data = await response.json();
+    stages = Array.isArray(data.stages) ? data.stages : [];
+  } catch { stages = []; }
+  const preferred = stages.find((stage) => stage.id === readStagePref());
+  selectStage(preferred || null);
+  renderStages();
+}
+
+function selectStage(stage) {
+  activeStage = stage || null;
+  writeStagePref(stage?.id || "");
+  stageImage = null;
+  if (stage?.image_url) {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    // Only a fully decoded image is ever handed to the renderer, so a slow or
+    // broken upload never blanks the arena mid-match.
+    image.onload = () => { if (activeStage?.id === stage.id) stageImage = image; };
+    image.onerror = () => { if (activeStage?.id === stage.id) { stageImage = null; setStageStatus("That stage image could not be loaded."); } };
+    image.src = stage.image_url;
+  }
+  setStageStatus(stage ? stage.name : "Default arena");
+}
+
+function setStageStatus(text) { const el = $("#stage-status"); if (el) el.textContent = text; }
+
+function renderStages() {
+  const strip = $("#stage-strip"); if (!strip) return;
+  const tiles = [`<button class="stage-tile${activeStage ? "" : " active"}" data-stage="">DEFAULT<br><small>Neon arena</small></button>`];
+  for (const stage of stages) {
+    tiles.push(`<button class="stage-tile${activeStage?.id === stage.id ? " active" : ""}" data-stage="${escapeHtml(stage.id)}" style="background-image:url('${escapeHtml(stage.image_url)}')"><span>${escapeHtml(stage.name)}</span></button>`);
+  }
+  strip.innerHTML = tiles.join("");
+  strip.querySelectorAll(".stage-tile").forEach((tile) => {
+    tile.onclick = () => {
+      playSfx("menuSelect", { volume: .5 });
+      selectStage(stages.find((stage) => stage.id === tile.dataset.stage) || null);
+      renderStages();
+    };
+  });
+}
+
 function drawArenaBackdrop(w, h, time) {
   const horizon = Math.round(h * .68), floor = Math.round(h * .75), center = w / 2;
+  if (stageImage) {
+    // Cover, not stretch: the uploaded art keeps its aspect ratio and is
+    // cropped to the arena instead of being squashed to fit it.
+    const scale = Math.max(w / stageImage.naturalWidth, h / stageImage.naturalHeight);
+    const drawWidth = stageImage.naturalWidth * scale, drawHeight = stageImage.naturalHeight * scale;
+    ctx.drawImage(stageImage, (w - drawWidth) / 2, (h - drawHeight) / 2, drawWidth, drawHeight);
+    // A soft floor shadow so the fighters still read as standing on something.
+    const grounding = ctx.createLinearGradient(0, floor - 40, 0, h);
+    grounding.addColorStop(0, "rgba(4,10,18,0)"); grounding.addColorStop(1, "rgba(4,10,18,.72)");
+    ctx.fillStyle = grounding; ctx.fillRect(0, floor - 40, w, h - floor + 40);
+    return;
+  }
   const sky = ctx.createLinearGradient(0, 0, 0, horizon); sky.addColorStop(0, "#07131f"); sky.addColorStop(.5, "#12384a"); sky.addColorStop(1, "#266b79"); ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#07131d"; ctx.fillRect(0, horizon - 86, w, 120);
   ctx.globalAlpha = .22;
@@ -2418,6 +2761,118 @@ function drawAttackPersonality(state, x, y, size) {
   }
   ctx.restore();
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// WEAPONS
+// A move that names a weapon draws the real sprite in the fighter's hand and
+// swings it along an arc chosen by its weapon motion, so a stab, an overhead
+// chop and a spinning sweep all read differently even with the same sprite.
+// ─────────────────────────────────────────────────────────────────────────────
+const weaponImages = new Map();
+function weaponImage(id) {
+  if (!WEAPON_IDS.has(id)) return null;
+  if (!weaponImages.has(id)) {
+    const image = new Image();
+    image.src = WEAPON_BASE + WEAPON_BY_ID.get(id).file;
+    weaponImages.set(id, image);
+  }
+  const image = weaponImages.get(id);
+  return image.complete && image.naturalWidth ? image : null;
+}
+
+// Where the weapon sits and how it is angled at this point in the swing.
+// `phase` runs 0 (windup) -> 1 (end of recovery); `swing` runs 0 -> 1 across
+// the active frames alone, which is where the real motion lives.
+function weaponPose(motion, phase, swing, reach) {
+  const ease = swing * swing * (3 - 2 * swing);
+  switch (motion) {
+    case "dive-stab":
+      // Point-down thrust: the blade drops through the body of the swing, which
+      // is what an air stomp-stab and a grounded downward stab both look like.
+      return { x: reach * (.16 + ease * .38), y: -168 + ease * 172, rotation: 1.35 + ease * .3, scale: 1 };
+    case "jump-spin":
+      // Spun overhead while airborne, so the arc sits high and stays high.
+      return { x: reach * .46 * Math.cos(ease * Math.PI * 2 - Math.PI / 2), y: -132 + reach * .34 * Math.sin(ease * Math.PI * 2 - Math.PI / 2), rotation: ease * Math.PI * 2.6, scale: 1 };
+    case "spin-throw": {
+      // Two beats in one move: spin it up through the active frames, then let
+      // it go, so the release reads as the pay-off for the wind-up.
+      const release = .62;
+      if (ease < release) {
+        const wind = ease / release;
+        return { x: reach * .44 * Math.cos(wind * Math.PI * 3), y: -92 + reach * .3 * Math.sin(wind * Math.PI * 3), rotation: wind * Math.PI * 3, scale: 1 };
+      }
+      const flight = (ease - release) / (1 - release);
+      return { x: reach * (.5 + flight * 2.1), y: -96 - Math.sin(flight * Math.PI) * 30, rotation: Math.PI * 3 + flight * Math.PI * 6, scale: 1 - flight * .25 };
+    }
+    case "stab":
+      return { x: reach * (.12 + ease * .95), y: -74, rotation: -.08, scale: 1 };
+    case "overhead":
+      return { x: reach * (.28 + ease * .42), y: -150 + ease * 120, rotation: -2.05 + ease * 2.6, scale: 1.05 };
+    case "arc":
+      return { x: reach * (.18 + Math.sin(ease * Math.PI) * .78), y: -132 + Math.sin(ease * Math.PI) * 74, rotation: -1.5 + ease * 3.1, scale: 1 };
+    case "sweep":
+      return { x: reach * (.15 + ease * .8), y: -34 - Math.sin(ease * Math.PI) * 22, rotation: 1.35 - ease * 1.5, scale: 1 };
+    case "spin":
+      return { x: reach * .42 * Math.cos(ease * Math.PI * 2), y: -86 + reach * .3 * Math.sin(ease * Math.PI * 2), rotation: ease * Math.PI * 2, scale: 1 };
+    case "throw":
+      return { x: reach * (.1 + phase * 1.6), y: -96 - Math.sin(phase * Math.PI) * 44, rotation: phase * Math.PI * 4, scale: .9 };
+    case "shoot":
+      return { x: reach * .3, y: -92, rotation: -.05 - Math.sin(ease * Math.PI) * .22, scale: 1 };
+    default: // swipe
+      return { x: reach * (.1 + ease * .9), y: -118 + ease * 58, rotation: -1.05 + ease * 2.2, scale: 1 };
+  }
+}
+
+// Draw one weapon at a pose. Split out so the main hand and the off hand of a
+// dual-wielder go through exactly the same path with different timing.
+function drawOneWeapon(state, id, pose, scale, opacity, live) {
+  const image = weaponImage(id); if (!image) return false;
+  const entry = WEAPON_BY_ID.get(id);
+  // Weapons are drawn at a readable size next to a 148px-wide fighter, not at
+  // their full nominal reach - a greatsword should still look like a sword the
+  // character is holding rather than a wall of pixels.
+  const length = Math.max(38, Math.min(180, entry.reach * .58)) * pose.scale * scale;
+  const height = length * (image.naturalHeight / Math.max(1, image.naturalWidth));
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.translate(pose.x, pose.y);
+  ctx.rotate(pose.rotation);
+  ctx.imageSmoothingEnabled = true;
+  // A weapon glows with the move's colour while it is live, which is what sells
+  // the active frames without hiding the sprite behind an effect.
+  if (live) { ctx.shadowColor = state.visual?.color || "#ffffff"; ctx.shadowBlur = 22; }
+  ctx.drawImage(image, -length * .18, -height * .5, length, height);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+  return true;
+}
+
+function drawWeapon(state, opacity) {
+  const id = state.visual?.weapon; if (!id) return false;
+  const entry = WEAPON_BY_ID.get(id); if (!entry) return false;
+  const activeStart = state.startup / 60, activeEnd = (state.startup + state.active) / 60;
+  const phase = Math.min(1, Math.max(0, state.t / Math.max(.001, state.duration)));
+  const swing = Math.min(1, Math.max(0, (state.t - activeStart) / Math.max(.001, activeEnd - activeStart)));
+  const live = state.t >= activeStart && state.t <= activeEnd;
+  let motion = state.behavior?.weaponMotion || WEAPON_DEFAULT_MOTION[entry.weaponClass] || "swipe";
+  // An airborne swing that would otherwise be a flat spin reads better spun
+  // overhead, and a downward air attack is a dive stab whatever it was called.
+  if (state.variant === "air" && motion === "spin") motion = "jump-spin";
+  if (state.variant === "air" && (state.diveKick || state.groundPound) && motion === "stab") motion = "dive-stab";
+  const reach = (state.hitRange || entry.reach) / 1.28;
+  const scale = clampNumber(state.visual?.weaponScale, .35, 1.8, 1);
+  let drawn = drawOneWeapon(state, id, weaponPose(motion, phase, swing, reach), scale, opacity, live);
+
+  // Dual wield: the off hand mirrors the main hand a beat behind and slightly
+  // behind in depth, so the pair reads as two blades rather than one doubled.
+  const offhandId = state.visual?.weaponOffhand;
+  if (offhandId && WEAPON_BY_ID.has(offhandId)) {
+    const lag = Math.max(0, Math.min(1, swing - .18));
+    const offhandPose = weaponPose(state.behavior?.weaponMotionOffhand || motion, Math.max(0, phase - .1), lag, reach * .82);
+    offhandPose.y += 26; offhandPose.x -= 16; offhandPose.rotation = -offhandPose.rotation * .82;
+    drawn = drawOneWeapon(state, offhandId, offhandPose, scale * .88, opacity * .9, live) || drawn;
+  }
+  return drawn;
+}
 function drawMoveVisual(f, state) {
   if (!state?.visual) return;
   const v = state.visual, effect = v.effect, size = v.size, activeStart = state.startup / 60, activeEnd = (state.startup + state.active) / 60;
@@ -2429,8 +2884,10 @@ function drawMoveVisual(f, state) {
   const assetHalf = Math.max(36, size * 1.025), assetOffset = size * .45;
   const x = meleeVisual ? Math.max(44, renderReach - assetHalf - assetOffset) : state.variant === "air" ? 52 : 46;
   const y = state.animation?.contact === "foot" ? -58 : state.variant === "crouch" ? -64 : -88;
+  const weaponDrawn = drawWeapon(state, active ? 1 : .55);
   if (runVisualScript(state, x, y, size, active, Math.min(1, Math.max(0, state.t / Math.max(.001, state.duration))))) { ctx.restore(); return; }
-  drawAttackPersonality(state, x, y, size);
+  // With a real weapon on screen the generic body flourish just clutters it.
+  if (!weaponDrawn) drawAttackPersonality(state, x, y, size);
   drawVfxAsset(v.mainVfx, state.t * (Number(v.vfxFps) || 18), x + size * .45, y, Math.max(72, size * 2.05), active ? .96 : .48, state.animation?.style === "spin" ? Math.sin((battle?.elapsed || 0) * 17) * .22 : 0);
   if (state.charge && state.t < activeStart) {
     const chargePulse = 1 + Math.sin((battle?.elapsed || 0) * 18) * .08, chargeRadius = size * (.28 + windup * .55);
@@ -2543,7 +3000,12 @@ function drawImpactFx(f) {
   }
 }
 function drawFreezeFx(f) { if (f.frozen <= 0) return; const pulse = 1 + Math.sin((battle?.elapsed || 0) * 12) * .05; ctx.save(); ctx.translate(f.x, f.y - 92); ctx.globalAlpha = .78; ctx.strokeStyle = "#bdf6ff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 62 * pulse, 0, Math.PI * 2); ctx.stroke(); for (let i=0;i<8;i++) { const a=i*Math.PI/4; const r=48 + (i%2)*15; ctx.beginPath(); ctx.moveTo(Math.cos(a)*20,Math.sin(a)*20); ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r); ctx.stroke(); } ctx.fillStyle="#eefcff"; ctx.font="25px serif"; ctx.textAlign="center"; ctx.fillText("❄",0,-70); ctx.restore(); }
-function drawFighter(f) { const c=f.fighter.config||{}, flip=f.dir, crouching=f.crouch>0 || f.attackState?.variant==="crouch", attacking=f.pose.includes("attack") || f.pose==="cast" || f.pose.includes("grapple"), blocking=f.blocking || f.blockFlash>0, running=f.pose==="run"; drawImpactFx(f); drawFreezeFx(f); drawGrappleLink(f); const at=animationTransform(f,f.attackState); ctx.save();ctx.translate(f.x + at.offsetX, f.y + at.offsetY);ctx.scale(flip,1);ctx.scale(1.28,1.28);ctx.rotate(at.rotation);ctx.transform(1,at.skewY,at.skewX,1,0,0);ctx.scale(at.scaleX,at.scaleY);ctx.scale(1,crouching ? .76 : 1); if(spriteSheet){ const crop=f.fighter.example ? {x:225,y:0,w:300,h:415} : {x:905,y:0,w:375,h:415}; ctx.imageSmoothingEnabled=true; ctx.globalAlpha=f.hurt > 0 ? .45 : f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1; ctx.drawImage(spriteSheet,crop.x,crop.y,crop.w,crop.h,-74,-190,148,190); ctx.globalAlpha=1; if(attacking){ctx.font="26px serif";ctx.fillText((c.emojis||["👊"])[f.attackState?.variant==="air"?2:0]||"👊",45,-95);} drawMoveVisual(f,f.attackState); drawCombatStateFx(f,blocking,running); ctx.restore(); return; } if(f.hurt>0){ctx.globalAlpha=.32;ctx.fillStyle="#fff";ctx.fillRect(-50,-155,100,145);ctx.globalAlpha=1;} for(const t of f.trail){ctx.globalAlpha=t.t*2;ctx.fillStyle=c.accent||"#ff5b52";ctx.beginPath();ctx.arc(t.x-f.x,t.y-f.y-75,18,0,7);ctx.fill();}ctx.globalAlpha=f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
+function drawFighter(f) { const c=f.fighter.config||{}, flip=f.dir, crouching=f.crouch>0 || f.attackState?.variant==="crouch", attacking=f.pose.includes("attack") || f.pose==="cast" || f.pose.includes("grapple"), blocking=f.blocking || f.blockFlash>0, running=f.pose==="run"; drawImpactFx(f); drawFreezeFx(f); drawGrappleLink(f); const at=animationTransform(f,f.attackState); ctx.save();ctx.translate(f.x + at.offsetX, f.y + at.offsetY);ctx.scale(flip,1);ctx.scale(1.28,1.28);ctx.rotate(at.rotation);ctx.transform(1,at.skewY,at.skewX,1,0,0);ctx.scale(at.scaleX,at.scaleY);ctx.scale(1,crouching ? .76 : 1); if(spriteSheet){ const crop=f.fighter.example ? SPRITE_CROPS.kung : SPRITE_CROPS.cyber; ctx.imageSmoothingEnabled=true; ctx.globalAlpha=f.hurt > 0 ? .45 : f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
+  // The two source crops are drawn facing opposite ways. Everything else in
+  // this transform already works in "forward is +x" space, so only the image
+  // itself is mirrored back to match - otherwise the forged sprite fights
+  // with its back to its opponent.
+  ctx.save(); if(crop.facing<0) ctx.scale(-1,1); ctx.drawImage(spriteSheet,crop.x,crop.y,crop.w,crop.h,-74,-190,148,190); ctx.restore(); ctx.globalAlpha=1; if(attacking){ctx.font="26px serif";ctx.fillText((c.emojis||["👊"])[f.attackState?.variant==="air"?2:0]||"👊",45,-95);} drawMoveVisual(f,f.attackState); drawCombatStateFx(f,blocking,running); ctx.restore(); return; } if(f.hurt>0){ctx.globalAlpha=.32;ctx.fillStyle="#fff";ctx.fillRect(-50,-155,100,145);ctx.globalAlpha=1;} for(const t of f.trail){ctx.globalAlpha=t.t*2;ctx.fillStyle=c.accent||"#ff5b52";ctx.beginPath();ctx.arc(t.x-f.x,t.y-f.y-75,18,0,7);ctx.fill();}ctx.globalAlpha=f.invuln > 0 ? .68 + Math.sin((battle?.elapsed||0)*46)*.16 : 1;
   ctx.fillStyle="rgba(0,0,0,.3)";ctx.beginPath();ctx.ellipse(0,4,45,10,0,0,7);ctx.fill();ctx.fillStyle=c.color||"#f2c447";ctx.fillRect(-23,-105,46,73);ctx.fillStyle=c.accent||"#bd293a";ctx.fillRect(-29,-92,58,16);ctx.fillStyle="#f6c59c";ctx.beginPath();ctx.arc(0,-126,27,0,7);ctx.fill();ctx.fillStyle="#18212d";ctx.fillRect(-23,-144,46,12);ctx.fillStyle="#111";ctx.fillRect(7,-128,4,4);
   const animation=f.attackState?.animation||{}, gesture=String(animation.gesture||"").toLowerCase(), phase=f.attackState?.grapplePhase, limbColor=c.color||"#f2c447";ctx.strokeStyle=limbColor;ctx.lineWidth=18;ctx.lineCap="round";
   if(animation.style==="kick" || animation.contact==="foot" || /roundhouse|sweep|knee/.test(gesture)) { ctx.beginPath();ctx.moveTo(-18,-92);ctx.lineTo(18,-66);ctx.stroke();ctx.strokeStyle="#213248";ctx.lineWidth=20;ctx.beginPath();ctx.moveTo(14,-34);ctx.lineTo(attacking && /dive/.test(gesture)?72:attacking?(gesture.includes("sweep")?68:58):25,attacking && /dive/.test(gesture)?18:attacking?(gesture.includes("sweep")?-18:-76):0);ctx.stroke();ctx.moveTo(-14,-34);ctx.lineTo(-25,0);ctx.stroke(); }
@@ -2560,8 +3022,15 @@ async function loadSprites() {
   const octx = off.getContext("2d"); octx.drawImage(image,0,0); const pixels=octx.getImageData(0,0,off.width,off.height); const d=pixels.data;
   for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2]; const green=g>145 && g>r*1.35 && g>b*1.18; if(green){ d[i+3]=0; } else if(g>r*1.15 && g>b*1.08){ d[i+3]=Math.max(0,Math.min(255,255-(g-Math.max(r,b))*2)); } }
   octx.putImageData(pixels,0,0); spriteSheet=off;
-  const cropToData = (x,y,w,h) => { const crop=document.createElement("canvas"); crop.width=w; crop.height=h; crop.getContext("2d").drawImage(off,x,y,w,h,0,0,w,h); return crop.toDataURL("image/png"); };
-  spriteThumbs.kung=cropToData(225,0,300,415); spriteThumbs.cyber=cropToData(905,0,375,415); renderRoster();
+  // Portraits are normalised to face right too, so a roster of mixed sprites
+  // does not have half its cards looking off the edge of the screen.
+  const cropToData = ({ x, y, w, h, facing }) => {
+    const crop=document.createElement("canvas"); crop.width=w; crop.height=h;
+    const cctx=crop.getContext("2d");
+    if (facing < 0) { cctx.translate(w, 0); cctx.scale(-1, 1); }
+    cctx.drawImage(off,x,y,w,h,0,0,w,h); return crop.toDataURL("image/png");
+  };
+  spriteThumbs.kung=cropToData(SPRITE_CROPS.kung); spriteThumbs.cyber=cropToData(SPRITE_CROPS.cyber); renderRoster();
 }
-function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();
-window.__battle = () => battle;
+function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();loadStages();
+

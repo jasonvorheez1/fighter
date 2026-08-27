@@ -82,6 +82,12 @@ function serializableMove(move) {
   // Inert to the fight engine - only used by the editor to redraw a saved
   // fighter's moves into the right "normal" or "special" list.
   if (move.category === "normal" || move.category === "special") output.category = move.category;
+  // A follow-up is a whole move in its own right, so it round-trips through the
+  // same serializer - one level deep, which is all the engine allows.
+  if (move.followUp) {
+    output.followUp = serializableMove(move.followUp);
+    output.followUpWindow = move.followUpWindow;
+  }
   return output;
 }
 

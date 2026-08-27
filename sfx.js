@@ -4,6 +4,11 @@
 // decoded once and cached; each call to play() spins up its own source node so
 // overlapping hits (a jab into a counter, two fighters landing hits the same
 // frame) never cut each other off the way a shared <audio> element would.
+//
+// Some hosts (embedded iframes, restrictive sandboxes) block AudioContext or
+// never let it leave "suspended" no matter how it is unlocked. Rather than go
+// silent in that case, every play falls back to a plain <audio> element, which
+// browsers gate on user-activation the same way but support far more widely.
 // ─────────────────────────────────────────────────────────────────────────────
 const BASE = "uploads/Sounds/";
 
@@ -79,9 +84,21 @@ const REGISTRY = {
   menuError: ["400_menu_error.wav"]
 };
 
-let ctx = null;
+let volume = readStoredNumber("forge-sfx-volume", .8);
+let muted = readStoredFlag("forge-sfx-muted", false);
+function readStoredNumber(key, fallback) { try { const raw = Number(localStorage.getItem(key)); return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : fallback; } catch { return fallback; } }
+function readStoredFlag(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : raw === "1"; } catch { return fallback; } }
+function writeStored(key, value) { try { localStorage.setItem(key, value); } catch { /* storage unavailable - in-memory only */ } }
+
+// ── Web Audio path ──────────────────────────────────────────────────────────
+let ctx = null, ctxFailed = false;
 function getCtx() {
-  if (!ctx) { const Ctor = window.AudioContext || window.webkitAudioContext; ctx = Ctor ? new Ctor() : null; }
+  if (ctxFailed) return null;
+  if (!ctx) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) { ctxFailed = true; return null; }
+    try { ctx = new Ctor(); } catch { ctxFailed = true; return null; }
+  }
   return ctx;
 }
 let masterGain = null;
@@ -90,12 +107,6 @@ function getMaster() {
   if (!masterGain) { masterGain = context.createGain(); masterGain.gain.value = volume; masterGain.connect(context.destination); }
   return masterGain;
 }
-
-let volume = readStoredNumber("forge-sfx-volume", .8);
-let muted = readStoredFlag("forge-sfx-muted", false);
-function readStoredNumber(key, fallback) { try { const raw = Number(localStorage.getItem(key)); return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : fallback; } catch { return fallback; } }
-function readStoredFlag(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : raw === "1"; } catch { return fallback; } }
-function writeStored(key, value) { try { localStorage.setItem(key, value); } catch { /* storage unavailable - in-memory only */ } }
 
 const bufferCache = new Map();
 function loadBuffer(url) {
@@ -108,34 +119,10 @@ function loadBuffer(url) {
   return promise;
 }
 
-// Unlock playback on the first user gesture - browsers suspend a fresh
-// AudioContext until one occurs. Any click on the page satisfies it.
-let unlocked = false;
-function unlock() {
-  if (unlocked) return;
-  const context = getCtx(); if (!context) return;
-  unlocked = true;
-  if (context.state === "suspended") context.resume().catch(() => {});
-}
-["pointerdown", "keydown"].forEach((event) => document.addEventListener(event, unlock, { once: true, capture: true }));
-
-const lastPlayed = new Map();
-// Play one random take from a named pool. cooldown throttles spammy sources
-// (rapid-jab hits, footstep-style triggers) so they don't stack into noise.
-export function playSfx(key, { volume: gainLevel = 1, rate = 1, rateJitter = .05, cooldown = 0, pan = 0 } = {}) {
-  if (muted) return;
-  const pool = REGISTRY[key];
-  if (!pool || !pool.length) return;
-  const context = getCtx(); if (!context) return;
-  if (cooldown > 0) {
-    const now = context.currentTime, last = lastPlayed.get(key) || -Infinity;
-    if (now - last < cooldown) return;
-    lastPlayed.set(key, now);
-  }
-  const file = pool[Math.floor(Math.random() * pool.length)];
-  loadBuffer(BASE + file).then((buffer) => {
+function playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan }) {
+  const context = getCtx(); if (!context) return false;
+  loadBuffer(url).then((buffer) => {
     if (!buffer) return;
-    if (context.state === "suspended") context.resume().catch(() => {});
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.playbackRate.value = Math.max(.25, rate * (1 + (Math.random() * 2 - 1) * rateJitter));
@@ -151,6 +138,75 @@ export function playSfx(key, { volume: gainLevel = 1, rate = 1, rateJitter = .05
     }
     source.start(0);
   });
+  return true;
+}
+
+// ── <audio> element fallback ────────────────────────────────────────────────
+// Used whenever Web Audio is unavailable, or its context refuses to leave
+// "suspended" (some embedded/sandboxed hosts block AudioContext outright but
+// still honor a plain media element's play() after a real user gesture).
+const elementPool = new Map(); // url -> array of idle <audio> elements
+function playViaElement(url, { volume: gainLevel, rate }) {
+  let pool = elementPool.get(url);
+  if (!pool) { pool = []; elementPool.set(url, pool); }
+  let el = pool.find((candidate) => candidate.paused || candidate.ended);
+  if (!el) {
+    el = new Audio(url);
+    el.preload = "auto";
+    if (pool.length < 4) pool.push(el); // cap concurrent overlaps per sound
+  }
+  el.currentTime = 0;
+  el.volume = Math.max(0, Math.min(1, gainLevel * volume));
+  el.playbackRate = Math.max(.25, rate);
+  el.play().catch(() => { /* still blocked - nothing more to try */ });
+}
+
+// ── Unlock: keep trying on every early gesture until audio actually plays ──
+// once:true on a single event type is not reliable enough across hosts - some
+// browsers need the resume() call on the exact gesture that later triggers
+// sound, not an earlier unrelated one. So this keeps listening (cheaply) until
+// the context reports "running", rather than assuming the first try worked.
+let webAudioUnlocked = false;
+function attemptUnlock() {
+  if (webAudioUnlocked) return;
+  const context = getCtx();
+  if (!context) return; // Web Audio unavailable - the element fallback needs no unlocking step
+  if (context.state === "running") { webAudioUnlocked = true; detachUnlockListeners(); return; }
+  context.resume().then(() => {
+    if (context.state === "running") { webAudioUnlocked = true; detachUnlockListeners(); }
+  }).catch(() => {});
+}
+const unlockEvents = ["pointerdown", "keydown", "touchstart", "click"];
+function detachUnlockListeners() { unlockEvents.forEach((event) => document.removeEventListener(event, attemptUnlock, true)); }
+unlockEvents.forEach((event) => document.addEventListener(event, attemptUnlock, { capture: true }));
+
+// Called directly from the buttons that start play (start match, rematch,
+// the sound toggle) so unlocking happens synchronously inside that exact
+// click's call stack, rather than only hoping a separate global listener won.
+export function primeSfx() { attemptUnlock(); }
+
+const lastPlayed = new Map();
+// Play one random take from a named pool. cooldown throttles spammy sources
+// (rapid-jab hits, footstep-style triggers) so they don't stack into noise.
+export function playSfx(key, { volume: gainLevel = 1, rate = 1, rateJitter = .05, cooldown = 0, pan = 0 } = {}) {
+  if (muted) return;
+  const pool = REGISTRY[key];
+  if (!pool || !pool.length) return;
+  if (cooldown > 0) {
+    const now = (getCtx()?.currentTime) ?? performance.now() / 1000;
+    const last = lastPlayed.get(key) || -Infinity;
+    if (now - last < cooldown) return;
+    lastPlayed.set(key, now);
+  }
+  const file = pool[Math.floor(Math.random() * pool.length)];
+  const url = BASE + file;
+  attemptUnlock();
+  const context = getCtx();
+  // Web Audio only actually produces sound once its context is running; if it
+  // is stuck suspended (or unavailable at all) go straight to the fallback so
+  // a blocked AudioContext never means total silence.
+  const usedWebAudio = context && context.state === "running" && playViaWebAudio(url, { volume: gainLevel, rate, rateJitter, pan });
+  if (!usedWebAudio) playViaElement(url, { volume: gainLevel, rate });
 }
 
 export function setSfxVolume(value) {

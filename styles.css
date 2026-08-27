@@ -664,3 +664,43 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .sfx-toggle:hover { color:#10130d; background:var(--lime); }
 .sfx-toggle.muted { color:var(--muted); border-color:var(--line); }
 .sfx-toggle.muted:hover { color:#fff; background:#3a444f; }
+
+/* ── Move card: script health and follow-up section ─────────────────────── */
+.script-status { display:block; padding-top:5px; color:#71838d; font:8px 'DM Mono',monospace; letter-spacing:.35px; }
+.script-status[data-state="ok"] { color:var(--lime); }
+.script-status[data-state="bad"] { color:#ff6c61; }
+.follow-up-recipe > summary { color:var(--lime); }
+.follow-up-recipe .hint { margin:6px 0 10px; color:#8fa2ad; font:9px 'DM Mono',monospace; line-height:1.6; letter-spacing:.3px; }
+.follow-up-recipe .check-field { margin-bottom:10px; }
+
+/* ── Stage picker ───────────────────────────────────────────────────────── */
+.stage-picker { margin:16px 0 12px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface-2); }
+.stage-picker-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+.stage-picker-head strong { font:10px 'DM Mono',monospace; letter-spacing:1.4px; color:var(--muted); }
+.stage-picker-head small { color:var(--lime); font:9px 'DM Mono',monospace; letter-spacing:.4px; text-align:right; }
+.stage-strip { display:flex; gap:8px; overflow-x:auto; padding:10px 0 4px; }
+.stage-tile { position:relative; flex:0 0 108px; height:62px; padding:6px; border:1px solid var(--line-bright); border-radius:8px; background:var(--surface) center/cover no-repeat; color:var(--text); font:8px 'DM Mono',monospace; letter-spacing:.4px; text-align:left; cursor:pointer; overflow:hidden; }
+.stage-tile.active { border-color:var(--lime); box-shadow:0 0 0 1px var(--lime) inset; }
+.stage-tile span { position:absolute; left:0; right:0; bottom:0; padding:4px 6px; background:linear-gradient(transparent,rgba(4,10,18,.9)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stage-tile small { color:var(--muted); }
+.stage-picker-actions { display:flex; gap:8px; }
+.stage-picker-actions .secondary { flex:1; }
+
+/* ── Stage workshop ─────────────────────────────────────────────────────── */
+.stage-workshop .stage-upload-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:end; margin:16px 0 8px; }
+.stage-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; padding-top:6px; }
+.stage-card { display:flex; flex-direction:column; gap:4px; padding:8px; border:1px solid var(--line-bright); border-radius:10px; background:var(--surface-2); color:var(--text); text-align:left; cursor:pointer; }
+.stage-card.active { border-color:var(--lime); box-shadow:0 0 0 1px var(--lime) inset; }
+.stage-card strong { font-size:12px; }
+.stage-card small { color:var(--muted); font:8px 'DM Mono',monospace; letter-spacing:.4px; }
+.stage-card-art { display:block; height:78px; border-radius:6px; background:var(--surface) center/cover no-repeat; }
+.stage-card-art.default { background:linear-gradient(160deg,#12384a,#266b79 55%,#040a12); }
+.stage-preview-wrap { padding:16px; }
+.stage-preview { position:relative; aspect-ratio:16/9; border:1px solid var(--line-bright); border-radius:10px; background:var(--surface) center/cover no-repeat; overflow:hidden; }
+.stage-preview.default { background:linear-gradient(160deg,#07131f,#12384a 45%,#266b79 68%,#040a12); }
+.stage-preview-floor { position:absolute; left:0; right:0; bottom:0; height:26%; background:linear-gradient(rgba(4,10,18,0),rgba(4,10,18,.72)); }
+.stage-preview-hud { position:absolute; top:10px; left:0; right:0; display:flex; justify-content:center; gap:10px; align-items:baseline; color:var(--lime); font:9px 'DM Mono',monospace; letter-spacing:1px; text-shadow:0 1px 4px #000; }
+.stage-preview-hud b { font-size:20px; }
+.stage-preview-actions { display:flex; flex-direction:column; gap:8px; padding-top:12px; }
+.stages-page .hint { margin:10px 0 0; color:var(--muted); font:9px 'DM Mono',monospace; line-height:1.6; letter-spacing:.3px; }
+.stage-picker-actions .secondary { flex:1; display:grid; place-items:center; text-decoration:none; }

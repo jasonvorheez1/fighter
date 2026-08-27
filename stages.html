@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stage Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="stages-page">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">∞</span>
+          <div class="brand-copy"><span class="overline">STAGE SYSTEM / 03</span><h1>FIGHTER FORGE</h1></div>
+        </div>
+        <nav class="tabs" aria-label="Fighter Forge sections">
+          <a class="tab" href="index.html"><span>01</span>ARENA ↗</a>
+          <a class="tab" href="editor.html"><span>02</span>EDITOR ↗</a>
+          <span class="tab active"><span>03</span>STAGES</span>
+        </nav>
+        <div class="top-status"><i></i><span>BACKGROUND WORKSHOP</span><b id="stage-count">0 STAGES</b></div>
+      </header>
+
+      <main class="standalone-editor stage-workshop">
+        <section class="editor-identity-panel">
+          <div class="view-heading"><div><span class="overline">STAGE WORKSHOP</span><h2>Build an arena</h2></div><span class="view-index">03</span></div>
+          <div class="editor-scroll">
+            <div class="editor-callout"><strong>Upload a background. Fight on it.</strong><span>Any image works — a photo, a painting, a screenshot. It is cropped to fill the arena, so wide images read best. Saved stages live on your account alongside your fighters.</span></div>
+
+            <div class="stage-upload-row">
+              <label class="file-pick"><span>+</span> UPLOAD BACKGROUND <small>PNG · JPG · WEBP</small><input id="stage-file" type="file" accept="image/*" /></label>
+              <label>Stage name<input id="stage-name" maxlength="32" placeholder="Neon Rooftop" /><small class="field-help">Named after the file if you leave this blank.</small></label>
+            </div>
+            <div id="stage-status" class="status" aria-live="polite"></div>
+
+            <fieldset class="move-group">
+              <legend>Your stages <span id="stage-legend-count" class="group-count">0 SAVED</span></legend>
+              <div id="stage-grid" class="stage-grid"></div>
+            </fieldset>
+          </div>
+        </section>
+
+        <section class="editor-code-panel">
+          <div class="view-heading"><div><span class="overline">LIVE PREVIEW</span><h2 id="preview-name">Default arena</h2></div><span class="view-index">↗</span></div>
+          <div class="stage-preview-wrap">
+            <div id="stage-preview" class="stage-preview" role="img" aria-label="Stage preview">
+              <div class="stage-preview-floor"></div>
+              <div class="stage-preview-hud"><span>ROUND 1</span><b>99</b></div>
+            </div>
+            <p class="hint">This is the crop the arena will use at 16:9. Anything outside the frame is trimmed.</p>
+            <div class="stage-preview-actions">
+              <button id="stage-use" class="primary full">USE THIS STAGE ↗</button>
+              <button id="stage-remove" class="secondary" disabled>DELETE STAGE</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="stages.js"></script>
+  </body>
+</html>
