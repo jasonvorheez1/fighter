@@ -57,6 +57,18 @@ function optionList(values, selected, labels = {}) { return values.map(value => 
 function parseConfig(value) { try { return typeof value === "string" ? JSON.parse(value) : (value || {}); } catch { return {}; } }
 function safeEmojis(value) { const found = String(value || "").match(/\p{Extended_Pictographic}/gu) || []; return (found.length ? found : ["👊", "⚡", "💥"]).slice(0, 6); }
 function comboLabel(value) { return ["LOW", "MODEST", "BALANCED", "STRONG", "WILD"][Number(value) - 1] || "BALANCED"; }
+// Older saved fighters have no move.category. A normal is a fast, close-range,
+// no-frills button; anything ranged, a grab, a launcher, or slow is a special.
+function inferCategory(move) {
+  if (move.category === "normal" || move.category === "special") return move.category;
+  const type = String(move.type || "melee");
+  const rangedType = ["projectile", "trap", "freeze", "pillar", "bomb", "gun"].includes(type);
+  const startup = Number(move.startup) || 0;
+  if (rangedType || type === "grapple" || move.launcher === true || startup > 10) return "special";
+  return "normal";
+}
+const CATEGORY_CAP = { normal: 3, special: 4 };
+const CATEGORY_LABEL = { normal: "NORMAL", special: "SPECIAL" };
 const vfxLabels = Object.fromEntries(VFX_ENTRIES.map((entry) => [entry.id, `${entry.name} · ${entry.frames.length}F`]));
 const mainVfxIds = MAIN_VFX_ENTRIES.map((entry) => entry.id);
 const hitVfxIds = HIT_VFX_ENTRIES.map((entry) => entry.id);
@@ -156,40 +168,61 @@ function refreshCustomSpriteStatus(row) {
   status.classList.toggle("attached", Boolean(input?.value));
 }
 
-function addMove(move = {}) {
-  const list = $("#special-list");
-  if (list.children.length >= 5) return;
+function listFor(category) { return $(category === "normal" ? "#normal-list" : "#special-list"); }
+function buildMoveRow(move, category) {
   const normalized = normalizeMove(move, currentFighter?.config || {}), visual = normalized.visual, behavior = normalized.behavior, animation = normalized.animation;
-  const row = document.createElement("article"); row.className = "special-editor";
-  row.innerHTML = `<div class="move-card-heading"><div class="move-heading-copy"><strong>MOVE <span class="move-number">${list.children.length + 1}</span></strong><span class="move-summary"></span></div><button type="button" class="remove-move" title="Remove move">×</button></div>
-    <div class="move-core">${field("Name", "name", normalized.name)}${selectField("Type", "type", types, normalized.type)}${selectField("Combo role", "role", roles, normalized.role)}${selectField("Variant", "variant", ["light", "medium", "heavy", "all"], normalized.variant)}<label class="check-field">Launcher<input data-field="launcher" type="checkbox" ${normalized.launcher ? "checked" : ""}></label><label class="check-field">Crouching<input data-field="crouch" type="checkbox" ${normalized.crouch ? "checked" : ""}></label><label class="check-field">Air ready<input data-field="air" type="checkbox" ${normalized.air ? "checked" : ""}></label></div>
+  const row = document.createElement("article"); row.className = "special-editor"; row.dataset.category = category;
+  row.innerHTML = `<div class="move-card-heading"><div class="move-heading-copy"><strong>${CATEGORY_LABEL[category]} <span class="move-number">1</span></strong><span class="move-summary"></span></div><div class="move-card-actions"><button type="button" class="generate-move" title="Generate this move with AI">✦</button><button type="button" class="remove-move" title="Remove move">×</button></div></div>
+    <div class="move-quick">${field("Name", "name", normalized.name)}${selectField("Type", "type", types, normalized.type)}</div>
+    <div class="move-advanced advanced-only">
+    <div class="move-core">${selectField("Combo role", "role", roles, normalized.role)}${selectField("Variant", "variant", ["light", "medium", "heavy", "all"], normalized.variant)}<label class="check-field">Launcher<input data-field="launcher" type="checkbox" ${normalized.launcher ? "checked" : ""}></label><label class="check-field">Crouching<input data-field="crouch" type="checkbox" ${normalized.crouch ? "checked" : ""}></label><label class="check-field">Air ready<input data-field="air" type="checkbox" ${normalized.air ? "checked" : ""}></label></div>
     <div class="move-frame-grid">${field("Startup", "startup", normalized.startup, "number", "min=1 max=60")}${field("Active", "active", normalized.active, "number", "min=1 max=20")}${field("Endlag", "endlag", normalized.endlag, "number", "min=1 max=90")}${field("Hitstun", "hitstun", normalized.hitstun, "number", "min=1 max=60")}${field("Reach", "reach", normalized.reach || "", "number", "min=70 max=520 placeholder=auto")}${field("Juggle cost", "juggle", normalized.juggle, "number", "min=1 max=15")}</div>
     <details class="move-recipe"><summary>Visual recipe <span>+</span></summary><div class="recipe-grid">${selectField("Main effect asset", "visual.mainVfx", mainVfxIds, visual.mainVfx, "", vfxLabels)}${selectField("Hit spark asset", "visual.hitVfx", hitVfxIds, visual.hitVfx, "", vfxLabels)}${field("VFX FPS", "visual.vfxFps", visual.vfxFps, "number", "min=6 max=30")}${selectField("Effect", "visual.effect", effects, visual.effect)}${selectField("Element", "visual.element", elements, visual.element)}${field("Primary", "visual.color", visual.color, "color")}${field("Secondary", "visual.secondary", visual.secondary, "color")}${field("Size", "visual.size", visual.size, "number", "min=12 max=130")}${field("Emoji", "visual.emoji", visual.emoji)}<label class="script-field">JavaScript visual program<textarea data-field="visual.script" rows="5">${escapeHtml(visual.script || "")}</textarea><small>AI-authored canvas code. It runs through the arena drawing API.</small></label></div><a class="recipe-library-link" href="vfx.html">BROWSE ALL 270 PNG ASSETS ↗</a><div class="custom-sprite-status" aria-live="polite"></div></details>
     <details class="move-recipe"><summary>Behavior recipe <span>+</span></summary><div class="recipe-grid">${selectField("Motion", "behavior.motion", motions, behavior.motion)}${selectField("Projectile path", "behavior.pattern", patterns, behavior.pattern)}${field("Rapid hits", "behavior.rapidHits", behavior.rapidHits, "number", "min=2 max=8")}${field("Hit interval", "behavior.rapidInterval", behavior.rapidInterval, "number", "min=.045 max=.18 step=.005")}${field("Speed", "behavior.speed", behavior.speed, "number", "min=0 max=700")}${field("Gravity", "behavior.gravity", behavior.gravity, "number", "min=-1600 max=1600")}${field("Homing", "behavior.homing", behavior.homing, "number", "min=0 max=1 step=.05")}${field("Spread degrees", "behavior.spread", behavior.spread, "number", "min=-75 max=75")}${field("Bounces", "behavior.bounces", behavior.bounces, "number", "min=0 max=3")}${field("Orbit radius", "behavior.orbitRadius", behavior.orbitRadius, "number", "min=24 max=220")}${field("Orbit speed", "behavior.orbitSpeed", behavior.orbitSpeed, "number", "min=-12 max=12 step=.1")}${field("Return delay", "behavior.returnDelay", behavior.returnDelay, "number", "min=.15 max=1.5 step=.05")}${field("Dash distance", "behavior.dashDistance", behavior.dashDistance, "number", "min=30 max=300")}${field("Charge seconds", "behavior.charge", behavior.charge, "number", "min=.12 max=2.5 step=.05")}${field("Charge power", "behavior.chargePower", behavior.chargePower, "number", "min=.7 max=2.5 step=.05")}${field("Bomb fuse", "behavior.fuse", behavior.fuse, "number", "min=.18 max=2.5 step=.05")}${field("Radius", "behavior.radius", behavior.radius, "number", "min=0 max=140")}${field("Shots", "behavior.shots", behavior.shots, "number", "min=1 max=3")}${field("Lifetime", "behavior.lifetime", behavior.lifetime, "number", "min=.35 max=3 step=.05")}${field("Hold", "behavior.hold", behavior.hold, "number", "min=.08 max=1.2 step=.05")}${field("Freeze", "behavior.freeze", behavior.freeze, "number", "min=.25 max=2.5 step=.05")}${field("Offset", "behavior.offset", behavior.offset, "number", "min=40 max=180")}${selectField("Status", "behavior.status", ["none", "freeze"], behavior.status)}${selectField("Element", "behavior.element", elements, behavior.element)}${selectField("Finisher", "behavior.finisher", ["slam", "throw"], behavior.finisher || "slam")}${field("KB power", "behavior.knockback.power", behavior.knockback.power, "number", "min=0 max=900")}${field("KB horizontal", "behavior.knockback.horizontal", behavior.knockback.horizontal, "number", "min=0 max=900")}${field("KB vertical", "behavior.knockback.vertical", behavior.knockback.vertical, "number", "min=0 max=900")}${field("KB angle", "behavior.knockback.angle", behavior.knockback.angle, "number", "min=-80 max=80")}${selectField("KB direction", "behavior.knockback.direction", ["away", "toward", "up", "down"], behavior.knockback.direction)}${field("Hitstop", "behavior.knockback.hitstop", behavior.knockback.hitstop, "number", "min=0 max=.2 step=.01")}</div></details>
-    <details class="move-recipe"><summary>Animation recipe <span>+</span></summary><div class="recipe-grid">${selectField("Style", "animation.style", styles, animation.style)}${field("Gesture", "animation.gesture", animation.gesture)}${selectField("Windup", "animation.windup", windups, animation.windup)}${selectField("Contact", "animation.contact", contacts, animation.contact)}${selectField("Finish", "animation.finish", finishes, animation.finish)}${field("Intensity", "animation.intensity", animation.intensity, "number", "min=.45 max=1.6 step=.05")}${field("Rotate X", "animation.transform.rotateX", animation.transform.rotateX, "number", "min=-360 max=360")}${field("Rotate Y", "animation.transform.rotateY", animation.transform.rotateY, "number", "min=-360 max=360")}${field("Rotate Z", "animation.transform.rotateZ", animation.transform.rotateZ, "number", "min=-360 max=360")}${field("Spin", "animation.transform.spin", animation.transform.spin, "number", "min=-720 max=720")}${field("Spin speed", "animation.transform.spinSpeed", animation.transform.spinSpeed, "number", "min=-12 max=12 step=.1")}${field("Scale X", "animation.transform.scaleX", animation.transform.scaleX, "number", "min=.35 max=2.4 step=.05")}${field("Scale Y", "animation.transform.scaleY", animation.transform.scaleY, "number", "min=.35 max=2.4 step=.05")}${field("Skew X", "animation.transform.skewX", animation.transform.skewX, "number", "min=-.95 max=.95 step=.05")}${field("Skew Y", "animation.transform.skewY", animation.transform.skewY, "number", "min=-.95 max=.95 step=.05")}${field("Offset X", "animation.transform.offsetX", animation.transform.offsetX, "number", "min=-180 max=180")}${field("Offset Y", "animation.transform.offsetY", animation.transform.offsetY, "number", "min=-180 max=180")}${field("Orbit", "animation.transform.orbit", animation.transform.orbit, "number", "min=-1 max=1 step=.05")}${field("Pulse", "animation.transform.pulse", animation.transform.pulse, "number", "min=0 max=1 step=.05")}</div></details>`;
+    <details class="move-recipe"><summary>Animation recipe <span>+</span></summary><div class="recipe-grid">${selectField("Style", "animation.style", styles, animation.style)}${field("Gesture", "animation.gesture", animation.gesture)}${selectField("Windup", "animation.windup", windups, animation.windup)}${selectField("Contact", "animation.contact", contacts, animation.contact)}${selectField("Finish", "animation.finish", finishes, animation.finish)}${field("Intensity", "animation.intensity", animation.intensity, "number", "min=.45 max=1.6 step=.05")}${field("Rotate X", "animation.transform.rotateX", animation.transform.rotateX, "number", "min=-360 max=360")}${field("Rotate Y", "animation.transform.rotateY", animation.transform.rotateY, "number", "min=-360 max=360")}${field("Rotate Z", "animation.transform.rotateZ", animation.transform.rotateZ, "number", "min=-360 max=360")}${field("Spin", "animation.transform.spin", animation.transform.spin, "number", "min=-720 max=720")}${field("Spin speed", "animation.transform.spinSpeed", animation.transform.spinSpeed, "number", "min=-12 max=12 step=.1")}${field("Scale X", "animation.transform.scaleX", animation.transform.scaleX, "number", "min=.35 max=2.4 step=.05")}${field("Scale Y", "animation.transform.scaleY", animation.transform.scaleY, "number", "min=.35 max=2.4 step=.05")}${field("Skew X", "animation.transform.skewX", animation.transform.skewX, "number", "min=-.95 max=.95 step=.05")}${field("Skew Y", "animation.transform.skewY", animation.transform.skewY, "number", "min=-.95 max=.95 step=.05")}${field("Offset X", "animation.transform.offsetX", animation.transform.offsetX, "number", "min=-180 max=180")}${field("Offset Y", "animation.transform.offsetY", animation.transform.offsetY, "number", "min=-180 max=180")}${field("Orbit", "animation.transform.orbit", animation.transform.orbit, "number", "min=-1 max=1 step=.05")}${field("Pulse", "animation.transform.pulse", animation.transform.pulse, "number", "min=0 max=1 step=.05")}</div></details>
+    </div>`;
   row.querySelector("[data-field=type]").onchange = (event) => {
     const defaults = frameDefaults[event.target.value];
     ["startup", "active", "endlag", "hitstun"].forEach((key, index) => { row.querySelector(`[data-field=${key}]`).value = defaults[index]; });
     refreshMoveCard(row);
   };
   row.querySelector(".remove-move").onclick = () => { row.remove(); renumberMoves(); markDirty(); refreshCodePreview(); };
+  row.querySelector(".generate-move").onclick = () => regenerateSingleMove(row);
   row.addEventListener("input", () => { refreshMoveCard(row); markDirty(); });
   row.addEventListener("change", () => { refreshMoveCard(row); markDirty(); });
   row.insertAdjacentHTML("beforeend", `<input type="hidden" data-field="visual.spriteUrl" value="${escapeHtml(visual.spriteUrl || "")}">`);
-  list.append(row); renumberMoves(); refreshMoveCard(row);
-  refreshCustomSpriteStatus(row);
+  refreshMoveCard(row); refreshCustomSpriteStatus(row);
+  return row;
 }
-function renumberMoves() { [...$("#special-list").children].forEach((row, index) => row.querySelector(".move-number").textContent = index + 1); $("#move-count").textContent = `${$("#special-list").children.length} / 5`; }
+function addMove(move = {}, category = "special") {
+  const list = listFor(category);
+  if (list.children.length >= CATEGORY_CAP[category]) { setStatus(`${category === "normal" ? "Normal attacks" : "Special moves"} are full. Remove one before adding another.`, true); return null; }
+  const row = buildMoveRow(move, category);
+  list.append(row); renumberMoves();
+  return row;
+}
+function renumberMoves() {
+  for (const category of ["normal", "special"]) {
+    const rows = [...listFor(category).children];
+    rows.forEach((row, index) => row.querySelector(".move-number").textContent = index + 1);
+    $(`#${category}-count`).textContent = `${rows.length} / ${CATEGORY_CAP[category]}${category === "normal" ? " · QUICK, LOW-COMMITMENT BUTTONS" : " · THE FIGHTER'S SIGNATURE TOOLS"}`;
+  }
+}
 
 function readValue(row, key) { const input = row.querySelector(`[data-field="${key}"]`); return input?.type === "checkbox" ? input.checked : input?.value; }
 function setNested(target, path, value) { const parts = path.split("."); let cursor = target; parts.slice(0, -1).forEach(part => cursor = cursor[part] ||= {}); cursor[parts.at(-1)] = value; }
+function readMove(row, category) {
+  const move = { name: String(readValue(row, "name") || "").trim(), type: readValue(row, "type"), role: readValue(row, "role"), variant: readValue(row, "variant"), launcher: readValue(row, "launcher"), crouch: readValue(row, "crouch"), air: readValue(row, "air"), category };
+  ["startup", "active", "endlag", "hitstun", "reach", "juggle"].forEach(key => { const value = readValue(row, key); if (value !== "" && value != null) move[key] = Number(value); });
+  row.querySelectorAll("[data-field^='visual.'], [data-field^='behavior.'], [data-field^='animation.']").forEach(input => { const key = input.dataset.field; setNested(move, key, input.type === "number" ? Number(input.value) : input.value); });
+  const normalized = normalizeMove(move, currentFighter?.config || {});
+  normalized.category = category;
+  return normalized;
+}
 function collectMoves() {
-  return [...$("#special-list").children].map(row => {
-    const move = { name: String(readValue(row, "name") || "").trim(), type: readValue(row, "type"), role: readValue(row, "role"), variant: readValue(row, "variant"), launcher: readValue(row, "launcher"), crouch: readValue(row, "crouch"), air: readValue(row, "air") };
-    ["startup", "active", "endlag", "hitstun", "reach", "juggle"].forEach(key => { const value = readValue(row, key); if (value !== "" && value != null) move[key] = Number(value); });
-    row.querySelectorAll("[data-field^='visual.'], [data-field^='behavior.'], [data-field^='animation.']").forEach(input => { const key = input.dataset.field; setNested(move, key, input.type === "number" ? Number(input.value) : input.value); });
-    return normalizeMove(move, currentFighter?.config || {});
-  }).filter(move => move.name).slice(0, 5);
+  const normals = [...$("#normal-list").children].map(row => readMove(row, "normal")).filter(move => move.name).slice(0, CATEGORY_CAP.normal);
+  const specials = [...$("#special-list").children].map(row => readMove(row, "special")).filter(move => move.name).slice(0, CATEGORY_CAP.special);
+  return [...normals, ...specials];
 }
 function collectData() {
   const existing = currentFighter?.config || {};
@@ -237,7 +270,7 @@ function applyAssetUrl(request, url, filename) {
     $("#portrait-status").textContent = `Portrait attached · ${filename}`;
     return;
   }
-  const rows = [...$("#special-list").children];
+  const rows = [...$("#normal-list").children, ...$("#special-list").children];
   const exact = rows.find((row) => String(readValue(row, "name") || "").trim().toLowerCase() === request.moveName.toLowerCase());
   const row = exact || rows[request.moveIndex];
   const input = row?.querySelector('[data-field="visual.spriteUrl"]');
@@ -265,9 +298,15 @@ function fillForm(fighter = null) {
   $("#character-personality").value = config.personality || ""; $("#character-backstory").value = config.backstory || "";
   $("#character-prompt").value = fighter?.prompt || config.style || ""; $("#character-buttons").value = String(config.buttons || 4); $("#character-combo").value = String(config.combo || 3); $("#combo-value").textContent = comboLabel($("#character-combo").value);
   $("#character-emojis").value = (config.emojis || ["👊", "⚡", "🦵", "💥"]).join(" ");
-  $("#special-list").innerHTML = "";
-  const moves = Array.isArray(config.specials) && config.specials.length ? config.specials : [{ name:"Rising Launcher", type:"melee", variant:"heavy", launcher:true }, { name:"Pulse Strike", type:"melee", variant:"medium" }, { name:"Flash Arc", type:"projectile", variant:"light" }];
-  moves.slice(0, 5).forEach(addMove); renumberMoves();
+  $("#normal-list").innerHTML = ""; $("#special-list").innerHTML = "";
+  const moves = Array.isArray(config.specials) && config.specials.length ? config.specials : [
+    { name:"Quick Jab", type:"melee", variant:"light", category:"normal", startup:4, active:2, endlag:10, hitstun:10 },
+    { name:"Rising Launcher", type:"melee", variant:"heavy", launcher:true, category:"special" },
+    { name:"Flash Arc", type:"projectile", variant:"light", category:"special" }
+  ];
+  for (const move of moves) addMove(move, inferCategory(move));
+  renumberMoves();
+  updatePortraitPreview();
   clearDirty(fighter ? "All changes saved" : "Draft ready — save when you’re ready");
 }
 
@@ -284,7 +323,8 @@ async function loadFighter() {
 }
 
 $("#character-combo").oninput = (event) => $("#combo-value").textContent = comboLabel(event.target.value);
-$("#add-special").onclick = () => { if ($("#special-list").children.length >= 5) { setStatus("This moveset is full. Remove a move before adding another.", true); return; } addMove(); markDirty(); refreshCodePreview(); };
+$("#add-normal").onclick = () => { if (addMove({}, "normal")) { markDirty(); refreshCodePreview(); } };
+$("#add-special").onclick = () => { if (addMove({}, "special")) { markDirty(); refreshCodePreview(); } };
 const presetMoves = {
   charge: { name:"Charged Breaker", type:"projectile", role:"special", variant:"heavy", behavior:{ motion:"charge", pattern:"arc", charge:.62, chargePower:1.45, speed:410, radius:28 }, animation:{ style:"cast", gesture:"power cast", windup:"coil", contact:"energy", finish:"recoil", intensity:1.2 } },
   "dash-attack": { name:"Flash Step", type:"melee", role:"special", variant:"medium", reach:205, behavior:{ motion:"dash-attack", dashDistance:138, speed:520 }, animation:{ style:"dash", gesture:"driving knee", windup:"hop", contact:"body", finish:"follow-through", intensity:1.05 } },
@@ -292,12 +332,21 @@ const presetMoves = {
 };
 document.querySelectorAll("[data-preset]").forEach((button) => button.addEventListener("click", () => {
   const move = presetMoves[button.dataset.preset];
-  if (!move) return;
-  if ($("#special-list").children.length >= 5) { setStatus("This moveset is full. Remove a move before adding another.", true); return; }
-  addMove(move); markDirty(); refreshCodePreview();
+  if (!move || !addMove(move, "special")) return;
+  markDirty(); refreshCodePreview();
 }));
-$("#expand-recipes").onclick = () => $("#special-list").querySelectorAll("details").forEach((details) => { details.open = true; });
-$("#collapse-recipes").onclick = () => $("#special-list").querySelectorAll("details").forEach((details) => { details.open = false; });
+const presetNormals = {
+  jab: { name:"Quick Jab", type:"melee", variant:"light", startup:4, active:2, endlag:10, hitstun:10, animation:{ style:"strike", gesture:"jab", windup:"none", contact:"fist", finish:"recoil", intensity:.7 } },
+  kick: { name:"Snap Kick", type:"melee", variant:"medium", startup:6, active:3, endlag:14, hitstun:12, animation:{ style:"kick", gesture:"roundhouse", windup:"none", contact:"foot", finish:"recoil", intensity:.85 } },
+  sweep: { name:"Low Sweep", type:"melee", variant:"medium", crouch:true, startup:7, active:3, endlag:16, hitstun:14, animation:{ style:"kick", gesture:"sweep", windup:"crouch", contact:"foot", finish:"recoil", intensity:.9 } }
+};
+document.querySelectorAll("[data-normal-preset]").forEach((button) => button.addEventListener("click", () => {
+  const move = presetNormals[button.dataset.normalPreset];
+  if (!move || !addMove(move, "normal")) return;
+  markDirty(); refreshCodePreview();
+}));
+$("#expand-recipes").onclick = () => document.querySelectorAll("#normal-list details, #special-list details").forEach((details) => { details.open = true; });
+$("#collapse-recipes").onclick = () => document.querySelectorAll("#normal-list details, #special-list details").forEach((details) => { details.open = false; });
 document.querySelector(".standalone-editor")?.addEventListener("input", () => { markDirty(); refreshCodePreview(); });
 document.querySelector(".standalone-editor")?.addEventListener("change", () => { markDirty(); refreshCodePreview(); });
 $("#asset-use-emoji").onclick = () => finishAssetRequest({ attached: false });
@@ -318,6 +367,7 @@ $("#portrait-upload").onchange = async (event) => {
   const file = event.target.files[0]; if (!file) return;
   $("#portrait-status").textContent = "Uploading portrait…";
   try { portraitUrl = await window.websim.upload(file); $("#portrait-status").textContent = "Portrait attached."; } catch { $("#portrait-status").textContent = "Portrait upload failed; the existing image will be kept."; }
+  updatePortraitPreview();
 };
 
 $("#save-fighter").onclick = async () => {
@@ -334,17 +384,19 @@ $("#save-fighter").onclick = async () => {
   button.disabled = false;
 };
 
-$("#forge-with-ai").onclick = async () => {
+const MOVE_SCHEMA_NOTE = `Each move needs name, category ("normal" or "special"), type (melee, projectile, combo, trap, grapple, freeze, teleport, pillar, bomb, or gun), role, variant, launcher, crouch, air, startup, active, endlag, hitstun, reach, juggle, visual, behavior, and animation. A "normal" move is a fast, low-commitment poke: melee, startup under 10, no exotic behavior - a jab, a kick, a low sweep. A "special" move is the character's signature tool and can use any type, motion, or behavior. Use the Fighter Forge VFX bank: mainVfx controls the move sequence and hitVfx is the exact contact spark. Keep frame data usable for real links. Juggle is the air-combo cost from 1-15; launchers should spend the opponent's finite juggle budget. Give every move a distinct animation.gesture such as jab, cross, hook, elbow, palm, knee, roundhouse, sweep, overhead, thrust, slam, spin, burst, cast, or a short custom label. Behavior motion may be none, projectile, trap, dash, dash-attack, dive-kick, rapid-jab, charge, bomb, pull, grapple, teleport, pillar, gun, wall-slam, spin, multi-uppercut, fly-in, or ground-pound. Rapid-jab uses behavior.rapidHits and behavior.rapidInterval; dive-kick moves are air:true and accelerate toward the floor. Charge moves use behavior.charge seconds and chargePower; dash-attack moves use behavior.dashDistance; bomb moves use behavior.fuse and radius for a timed area explosion. Gun moves use type gun and motion gun for a fast flat bullet. Wall-slam moves use motion wall-slam to send the victim skidding into the nearest wall. Spin and multi-uppercut moves use motion spin or multi-uppercut with hits and hitInterval for a rotating or rising multi-hit; multi-uppercut is always a launcher. Fly-in moves use motion fly-in to rocket the attacker across the screen. Ground-pound moves use motion ground-pound to slam down from the air with a landing shockwave. Add behavior.knockback {horizontal:0-900, vertical:0-900, power:0-900, angle:-80-80, direction:"away|toward|up|down", hitstop:0-0.2, carry:true|false, wallBounce:true|false, groundBounce:true|false} whenever the move needs custom impact. Add animation.transform {rotateX:-360-360, rotateY:-360-360, rotateZ:-360-360, spin:-720-720, spinSpeed:-12-12, scaleX:0.35-2.4, scaleY:0.35-2.4, skewX:-0.95-0.95, skewY:-0.95-0.95, offsetX:-180-180, offsetY:-180-180, orbit:-1-1, pulse:0-1} for any expressive motion. These are declarative controls for the body; each move MUST also include visual.script containing literal JavaScript code for its unique canvas visual. Return only the code body, no markdown or function wrapper. The restricted API is api.line, api.arc, api.ring, api.circle, api.spark, api.slash, api.streak, api.shock, api.wedge, api.flash, api.glow, and api.asset(vfxId,x,y,size,alpha,rotation). The script receives t, p, active, size, color, secondary, move, and Math. Use loops and trigonometry to make every attack visually distinct. Never use window, document, network, storage, timers, imports, constructors, or globals.`;
+const MOVE_BEHAVIOR_GUIDE = `Expand the move design beyond basic straight attacks. Behavior may include pattern straight, arc, fan, boomerang, orbit, or rain; gravity, homing, spread, bounces, orbitRadius, orbitSpeed, and returnDelay are supported path controls. Combine them with charge, dash-attack, bomb, teleport, pillar, freeze, grapple, knockback, and expressive animation.transform values. Keep combat behavior declarative data, but write each move's visual.script as literal JavaScript drawing code using only the restricted visual API.`;
+
+$("#generate-fighter").onclick = async () => {
   const prompt = $("#character-prompt").value.trim() || "Original arcade fighter";
   if (prompt.length < 8) { setStatus("Give the forge a little more to work with.", true); return; }
-  const button = $("#forge-with-ai"); button.disabled = true; setStatus("AI is rewriting the combat blueprint…");
+  const button = $("#generate-fighter"); button.disabled = true; setStatus("AI is designing the fighter\u2026");
   try {
     if (!window.websim?.chat?.completions?.create) throw new Error("AI is unavailable; edit the moves manually.");
-    const system = `Design an original arcade fighting-game character. Return only JSON with name, author, style, personality, backstory, emojis, buttons (3-6), combo (1-5), and 1-5 specials. Each special needs name, type (melee, projectile, combo, trap, grapple, freeze, teleport, pillar, or bomb), role, variant, launcher, crouch, air, startup, active, endlag, hitstun, reach, juggle, visual, behavior, and animation. Use the Fighter Forge VFX bank: mainVfx controls the move sequence and hitVfx is the exact contact spark. Keep frame data usable for real links. Juggle is the air-combo cost from 1-15; launchers should spend the opponent's finite juggle budget. Give every move a distinct animation.gesture such as jab, cross, hook, elbow, palm, knee, roundhouse, sweep, overhead, thrust, slam, spin, burst, cast, or a short custom label. Behavior motion may be none, projectile, trap, dash, dash-attack, dive-kick, rapid-jab, charge, bomb, pull, grapple, teleport, or pillar. Rapid-jab uses behavior.rapidHits and behavior.rapidInterval; dive-kick moves are air:true and accelerate toward the floor. Charge moves use behavior.charge seconds and chargePower; dash-attack moves use behavior.dashDistance; bomb moves use behavior.fuse and radius for a timed area explosion. Add behavior.knockback {horizontal:0-900, vertical:0-900, power:0-900, angle:-80-80, direction:"away|toward|up|down", hitstop:0-0.2, carry:true|false, wallBounce:true|false, groundBounce:true|false} whenever the move needs custom impact. Add animation.transform {rotateX:-360-360, rotateY:-360-360, rotateZ:-360-360, spin:-720-720, spinSpeed:-12-12, scaleX:0.35-2.4, scaleY:0.35-2.4, skewX:-0.95-0.95, skewY:-0.95-0.95, offsetX:-180-180, offsetY:-180-180, orbit:-1-1, pulse:0-1} for any expressive motion. Use any combination: rotateZ is a true spin and rotateX/rotateY create 3D-style squash/skew in the 2D arena. These are declarative controls for the body; each move MUST also include visual.script containing literal JavaScript code for its unique canvas visual. Return only the code body, no markdown or function wrapper. The restricted API is api.line, api.arc, api.ring, api.circle, api.spark, api.glow, and api.asset(vfxId,x,y,size,alpha,rotation). The script receives t, p, active, size, color, secondary, move, and Math. Use loops and trigonometry to make every attack visually distinct. Never use window, document, network, storage, timers, imports, constructors, or globals.`;
-    const behaviorGuide = `Expand the move design beyond basic straight attacks. Behavior may include pattern straight, arc, fan, boomerang, orbit, or rain; gravity, homing, spread, bounces, orbitRadius, orbitSpeed, and returnDelay are supported path controls. Use these to create curved shots, returning weapons, orbiting hazards, falling attacks, and multi-shot patterns. Combine them with charge, dash-attack, bomb, teleport, pillar, freeze, grapple, knockback, and expressive animation.transform values. Keep combat behavior declarative data, but write each move's visual.script as literal JavaScript drawing code using only the restricted visual API.`;
+    const system = `Design an original arcade fighting-game character. Return only JSON with name, author, style, personality, backstory, emojis, buttons (3-6), combo (1-5), and specials: up to 3 quick "normal" attacks plus up to 4 flashier "special" moves (7 max total). ${MOVE_SCHEMA_NOTE}`;
     const identityNote = `Creator-controlled fields are locked during this edit. Do not change the character name (${$("#character-name").value.trim() || currentFighter?.name || "blank"}), author (${$("#character-author").value.trim() || currentFighter?.author || "Forge Author"}), or portrait. Return only the moveset and any non-identity blueprint fields.`;
     const assetRequestGuide = `If a move truly needs a custom uploaded sprite or portrait, add an assetRequests entry with kind, moveIndex, moveName, title, prompt, and reason. This is a request for the creator, not a URL. Do not request an image for ordinary punches, kicks, projectiles, or effects that can read with the existing VFX bank and visual.emoji. If no custom image is needed, return assetRequests as an empty array.`;
-    const completion = await window.websim.chat.completions.create({ messages: [{ role:"system", content:`${system} ${behaviorGuide} ${assetRequestGuide}` }, { role:"user", content:`${prompt}\n\n${identityNote}` }], json:true });
+    const completion = await window.websim.chat.completions.create({ messages: [{ role:"system", content:`${system} ${MOVE_BEHAVIOR_GUIDE} ${assetRequestGuide}` }, { role:"user", content:`${prompt}\n\n${identityNote}` }], json:true });
     const lockedName = $("#character-name").value.trim() || currentFighter?.name || "";
     const lockedAuthor = $("#character-author").value.trim() || currentFighter?.author || "Forge Author";
     const lockedPortrait = portraitUrl || currentFighter?.portrait_url || null;
@@ -359,11 +411,105 @@ $("#forge-with-ai").onclick = async () => {
     made.name = lockedName || made.name;
     made.author = lockedAuthor || made.author;
     portraitUrl = lockedPortrait;
-    $("#character-name").value = made.name; $("#character-author").value = made.author; $("#character-personality").value = made.personality; $("#character-backstory").value = made.backstory; $("#character-buttons").value = String(made.buttons); $("#character-combo").value = String(made.combo); $("#combo-value").textContent = comboLabel($("#character-combo").value); $("#character-emojis").value = made.emojis.join(" "); $("#special-list").innerHTML = ""; made.specials.forEach(addMove); renumberMoves(); refreshCodePreview(); markDirty();
+    $("#character-name").value = made.name; $("#character-author").value = made.author; $("#character-personality").value = made.personality; $("#character-backstory").value = made.backstory; $("#character-buttons").value = String(made.buttons); $("#character-combo").value = String(made.combo); $("#combo-value").textContent = comboLabel($("#character-combo").value); $("#character-emojis").value = made.emojis.join(" ");
+    $("#normal-list").innerHTML = ""; $("#special-list").innerHTML = "";
+    // The model tags each move's category; fall back to a heuristic for moves
+    // that skip it so the split always makes sense even if the model forgets.
+    const normals = made.specials.filter((move) => inferCategory(move) === "normal").slice(0, CATEGORY_CAP.normal);
+    const specials = made.specials.filter((move) => inferCategory(move) === "special").slice(0, CATEGORY_CAP.special);
+    for (const move of normals) addMove(move, "normal");
+    for (const move of specials) addMove(move, "special");
+    renumberMoves(); refreshCodePreview(); markDirty(); updatePortraitPreview();
     if (assetRequests.length) { setStatus("The forge has a few optional visual ideas. Choose an upload or keep the emoji fallback."); await resolveAssetRequests(assetRequests); refreshCodePreview(); }
-    setStatus(assetRequests.length ? "Moveset generated. Custom visuals were handled; the fighter is ready to save." : "Moveset generated. Name, author, and portrait were kept.");
-  } catch (error) { setStatus(error.message || "AI could not generate a moveset.", true); }
+    setStatus(assetRequests.length ? "Fighter generated. Custom visuals were handled; ready to save." : "Fighter generated and ready to save.");
+  } catch (error) { setStatus(error.message || "AI could not generate a fighter.", true); }
   button.disabled = false;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PER-MOVE AI GENERATION
+// Regenerates a single move in place - the identity and the rest of the
+// moveset stay exactly as they are, so this is safe to use move by move.
+// ─────────────────────────────────────────────────────────────────────────────
+async function regenerateSingleMove(row) {
+  const category = row.dataset.category === "normal" ? "normal" : "special";
+  const button = row.querySelector(".generate-move");
+  const existingName = String(readValue(row, "name") || "").trim();
+  if (!window.websim?.chat?.completions?.create) { setStatus("AI is unavailable; edit this move manually.", true); return; }
+  button.disabled = true; button.textContent = "\u2026";
+  try {
+    const data = collectData();
+    const siblingNames = [...$("#normal-list").children, ...$("#special-list").children]
+      .filter((sibling) => sibling !== row)
+      .map((sibling) => String(readValue(sibling, "name") || "").trim())
+      .filter(Boolean);
+    const system = `Design a single ${category} move for an original arcade fighting-game character. Return only JSON with one key, "move", holding the move object. ${MOVE_SCHEMA_NOTE} ${MOVE_BEHAVIOR_GUIDE}`;
+    const context = [
+      `Character: ${data.name || "unnamed fighter"}.`,
+      data.style ? `Concept: ${data.style}.` : "",
+      data.personality ? `Personality: ${data.personality}.` : "",
+      `This move's category is fixed as "${category}".`,
+      existingName ? `Keep the move named "${existingName}" and design around that name.` : "Invent a fitting name.",
+      siblingNames.length ? `Avoid repeating or closely resembling these other moves this fighter already has: ${siblingNames.join(", ")}.` : ""
+    ].filter(Boolean).join(" ");
+    const completion = await window.websim.chat.completions.create({ messages: [{ role:"system", content:system }, { role:"user", content:context }], json:true });
+    const raw = parseAiJson(completion.content);
+    const moveData = raw && typeof raw === "object" && raw.move ? raw.move : raw;
+    if (existingName) moveData.name = existingName;
+    moveData.category = category;
+    const replacement = buildMoveRow(moveData, category);
+    row.replaceWith(replacement);
+    renumberMoves(); refreshCodePreview(); markDirty();
+    setStatus(`${readValue(replacement, "name") || "Move"} generated.`);
+  } catch (error) { setStatus(error.message || "AI could not generate this move.", true); }
+  finally { const liveButton = row.isConnected ? row.querySelector(".generate-move") : null; if (liveButton) { liveButton.disabled = false; liveButton.textContent = "\u2726"; } }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PORTRAIT PREVIEW
+// Every forged fighter fights with the same in-battle sprite crop, so that
+// crop - not a blank placeholder - is what a fighter looks like by default in
+// the editor too. A custom portrait upload replaces it once one is attached.
+// ─────────────────────────────────────────────────────────────────────────────
+let defaultSpriteUrl = null;
+async function loadDefaultSprite() {
+  if (defaultSpriteUrl) return defaultSpriteUrl;
+  try {
+    const image = new Image(); image.src = "assets/fighter-sprites-source.png";
+    await image.decode();
+    const off = document.createElement("canvas"); off.width = image.naturalWidth; off.height = image.naturalHeight;
+    const octx = off.getContext("2d"); octx.drawImage(image, 0, 0);
+    const pixels = octx.getImageData(0, 0, off.width, off.height), d = pixels.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const green = g > 145 && g > r * 1.35 && g > b * 1.18;
+      if (green) d[i + 3] = 0;
+      else if (g > r * 1.15 && g > b * 1.08) d[i + 3] = Math.max(0, Math.min(255, 255 - (g - Math.max(r, b)) * 2));
+    }
+    octx.putImageData(pixels, 0, 0);
+    const crop = document.createElement("canvas"); crop.width = 375; crop.height = 415;
+    crop.getContext("2d").drawImage(off, 905, 0, 375, 415, 0, 0, 375, 415);
+    defaultSpriteUrl = crop.toDataURL("image/png");
+  } catch { defaultSpriteUrl = null; }
+  return defaultSpriteUrl;
+}
+async function updatePortraitPreview() {
+  const host = $("#portrait-preview"); if (!host) return;
+  if (portraitUrl) { host.innerHTML = `<img src="${escapeHtml(portraitUrl)}" alt="" />`; return; }
+  const sprite = await loadDefaultSprite();
+  host.innerHTML = sprite ? `<img src="${sprite}" alt="" />` : ($("#character-emojis").value.trim().split(/\s+/)[0] || "\U0001f94a");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIMPLE / ADVANCED
+// New fighters start simple - name/type per move plus one Generate button.
+// Editing an existing fighter opens in Advanced so its tuned values are
+// visible immediately.
+// ─────────────────────────────────────────────────────────────────────────────
+const advancedToggle = $("#advanced-toggle");
+function applyAdvancedMode() { document.querySelector(".standalone-editor")?.classList.toggle("advanced-mode", advancedToggle.checked); }
+advancedToggle.checked = Boolean(editingId);
+applyAdvancedMode();
+advancedToggle.onchange = applyAdvancedMode;
 
 loadFighter();

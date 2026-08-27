@@ -24,30 +24,54 @@
         <section class="editor-identity-panel">
           <div class="view-heading"><div><span id="editor-overline" class="overline">IDENTITY WORKSHOP</span><h2 id="editor-heading">Build a fighter</h2></div><span class="view-index">02</span></div>
           <div class="editor-scroll">
-            <div class="editor-callout"><strong>Start with the feeling.</strong><span>Give the fighter a point of view first. The moves will make more sense when their attitude does.</span></div>
-            <div class="editor-quick-guide" aria-label="Editor workflow"><span><b>1</b> Identity</span><span><b>2</b> Combat style</span><span><b>3</b> Save or forge</span></div>
-            <div class="editor-section-title"><span>IDENTITY</span><small>What makes them them?</small></div>
+            <div class="editor-callout"><strong>Describe them. AI does the rest.</strong><span>Write a short concept, hit Generate, and a full fighter — identity, portrait look, normals, and specials — comes back ready to fight. Everything below is optional fine-tuning.</span></div>
+
+            <div class="portrait-row">
+              <div class="portrait-preview" id="portrait-preview" aria-label="Fighter portrait preview">👊</div>
+              <div class="portrait-row-copy">
+                <label class="file-pick"><span>+</span> UPLOAD PORTRAIT <small>OPTIONAL</small><input id="portrait-upload" type="file" accept="image/*" /></label>
+                <small class="field-help">Defaults to this fighter's actual battle sprite — a custom image only replaces it if you upload one.</small>
+                <div id="portrait-status" class="status"></div>
+              </div>
+            </div>
+
             <div class="two-fields"><label>Character name<input id="character-name" maxlength="24" placeholder="Fighter name" required /><small class="field-help">This stays yours when AI forges the moves.</small></label><label>Author<input id="character-author" maxlength="24" placeholder="Forge Author" /><small class="field-help">Shown on the fighter card.</small></label></div>
-            <label class="simple-personality">Personality<input id="character-personality" maxlength="80" placeholder="e.g. cocky but loyal" /><small class="field-help">A short read on how they fight and speak.</small></label>
-            <label class="simple-backstory">Backstory<textarea id="character-backstory" maxlength="240" placeholder="Where they came from and what drives them..."></textarea><small class="field-help">One or two sentences is plenty.</small></label>
-            <label class="prompt-box"><span>Core concept</span><textarea id="character-prompt" maxlength="700" placeholder="A lightning-fast arcade boxer with neon gloves, storm dashes, and a heavy uppercut..."></textarea><small>Used by Forge AI as the design brief. Be specific about movement, attitude, and signature ideas.</small></label>
-            <div class="editor-section-title"><span>PLAY FEEL</span><small>How much freedom should their game plan have?</small></div>
-            <div class="form-row tuning-row"><label>Buttons<select id="character-buttons"><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label><label>Combo aptitude<input id="character-combo" type="range" min="1" max="5" value="3" /><output id="combo-value">BALANCED</output></label></div>
-            <label>Attack emojis<input id="character-emojis" maxlength="60" value="👊 ⚡ 🦵 💥" /><small class="field-help">These flavor the fighter’s move callouts. Separate emojis with spaces.</small></label>
-            <label class="file-pick"><span>+</span> REPLACE PORTRAIT <small>OPTIONAL</small><input id="portrait-upload" type="file" accept="image/*" /></label>
-            <div id="portrait-status" class="status"></div>
+
+            <label class="prompt-box"><span>Core concept</span><textarea id="character-prompt" maxlength="700" placeholder="A lightning-fast arcade boxer with neon gloves, storm dashes, and a heavy uppercut..."></textarea><small>Describe their look, attitude, and one or two signature ideas. AI fills everything else in from this.</small></label>
+
+            <button type="button" id="generate-fighter" class="primary full generate-fighter-btn">GENERATE FIGHTER <span>✦</span></button>
+
+            <details class="advanced-details">
+              <summary>Fine-tune identity <small>optional</small><span>+</span></summary>
+              <div class="advanced-details-body">
+                <label class="simple-personality">Personality<input id="character-personality" maxlength="80" placeholder="e.g. cocky but loyal" /><small class="field-help">A short read on how they fight and speak.</small></label>
+                <label class="simple-backstory">Backstory<textarea id="character-backstory" maxlength="240" placeholder="Where they came from and what drives them..."></textarea><small class="field-help">One or two sentences is plenty.</small></label>
+                <div class="form-row tuning-row"><label>Buttons<select id="character-buttons"><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label><label>Combo aptitude<input id="character-combo" type="range" min="1" max="5" value="3" /><output id="combo-value">BALANCED</output></label></div>
+                <label>Attack emojis<input id="character-emojis" maxlength="60" value="👊 ⚡ 🦵 💥" /><small class="field-help">These flavor the fighter’s move callouts. Separate emojis with spaces.</small></label>
+              </div>
+            </details>
           </div>
         </section>
 
         <section class="editor-moves-panel">
-          <div class="view-heading"><div><span class="overline">COMBAT BLUEPRINT</span><h2>Moveset editor</h2></div><span id="move-count" class="view-index">0 / 5</span></div>
+          <div class="view-heading">
+            <div><span class="overline">COMBAT BLUEPRINT</span><h2>Moveset editor</h2></div>
+            <label class="mode-toggle"><input type="checkbox" id="advanced-toggle" /><span>ADVANCED</span></label>
+          </div>
           <div class="editor-scroll">
-            <div class="lab-note"><span class="signal"></span><div><strong>Build the rhythm.</strong><span>Name the move and frame data first. Open a recipe when you want to shape its effect, path, or animation.</span></div></div>
-            <div class="moves-toolbar"><div><strong>Quick starts</strong><span>Drop in a useful foundation, then make it yours.</span></div><div class="move-presets"><button type="button" data-preset="charge">+ CHARGE</button><button type="button" data-preset="dash-attack">+ DASH</button><button type="button" data-preset="bomb">+ BOMB</button></div></div>
-            <fieldset class="moveset-fieldset"><legend>Special moves <small>UP TO 5 / AI CAN USE ALL OF THEM</small></legend><div id="special-list"></div><button type="button" id="add-special" class="small-button">+ ADD CUSTOM MOVE <span>↗</span></button></fieldset>
-            <div class="recipe-tools"><span>Advanced recipes</span><button type="button" id="expand-recipes" class="tiny-button">EXPAND ALL</button><button type="button" id="collapse-recipes" class="tiny-button">COLLAPSE ALL</button></div>
-            <details class="code-details"><summary>Developer view <small>Generated JavaScript</small><span>+</span></summary><pre id="code-preview">// Save or forge a character to inspect its combat script.</pre></details>
-            <div class="editor-actions"><button id="save-fighter" class="primary full">SAVE FIGHTER <span>↗</span></button><button id="forge-with-ai" class="secondary full">FORGE MOVES WITH AI <span>✦</span></button><a class="secondary full" href="index.html">BACK TO ARENA</a></div>
+            <div class="lab-note"><span class="signal"></span><div><strong>Normals throw fast, specials do the damage.</strong><span>Name a move and hit Generate for AI to design it alone — frame data, visuals, and behavior included. Turn on Advanced to hand-edit any of it.</span></div></div>
+
+            <fieldset class="moveset-fieldset"><legend>Normal attacks <small id="normal-count">0 / 3 · QUICK, LOW-COMMITMENT BUTTONS</small></legend><div id="normal-list"></div>
+              <div class="move-add-row"><button type="button" id="add-normal" class="small-button">+ ADD NORMAL <span>↗</span></button><div class="move-presets"><button type="button" data-normal-preset="jab">+ JAB</button><button type="button" data-normal-preset="kick">+ KICK</button><button type="button" data-normal-preset="sweep">+ LOW SWEEP</button></div></div>
+            </fieldset>
+
+            <fieldset class="moveset-fieldset"><legend>Special moves <small id="special-count">0 / 4 · THE FIGHTER'S SIGNATURE TOOLS</small></legend><div id="special-list"></div>
+              <div class="move-add-row"><button type="button" id="add-special" class="small-button">+ ADD SPECIAL <span>↗</span></button><div class="move-presets"><button type="button" data-preset="charge">+ CHARGE</button><button type="button" data-preset="dash-attack">+ DASH</button><button type="button" data-preset="bomb">+ BOMB</button></div></div>
+            </fieldset>
+
+            <div class="recipe-tools advanced-only"><span>Advanced recipes</span><button type="button" id="expand-recipes" class="tiny-button">EXPAND ALL</button><button type="button" id="collapse-recipes" class="tiny-button">COLLAPSE ALL</button></div>
+            <details class="code-details advanced-only"><summary>Developer view <small>Generated JavaScript</small><span>+</span></summary><pre id="code-preview">// Save or forge a character to inspect its combat script.</pre></details>
+            <div class="editor-actions"><button id="save-fighter" class="primary full">SAVE FIGHTER <span>↗</span></button><a class="secondary full" href="index.html">BACK TO ARENA</a></div>
             <div id="editor-dirty" class="editor-dirty" aria-live="polite"></div>
             <div id="editor-status" class="status"></div>
           </div>

@@ -1,5 +1,6 @@
 import { getVfx, framePath, VFX_DEFAULTS, VFX_IDS } from "./vfx-data.js";
 import { parseAiJson, sanitizeFighter, buildFighterModule, extractEmojis } from "./fighter-code.js";
+import { playSfx, panFromX, toggleSfxMuted, isSfxMuted } from "./sfx.js";
 
 const $ = (s) => document.querySelector(s);
 const arena = $("#arena"), ctx = arena.getContext("2d");
@@ -10,7 +11,7 @@ const kungFuMan = {
   script: `// Kung Fu Man — baseline fighter\nexport const fighter = {\n  name: "Kung Fu Man", buttons: 3, comboAptitude: 1,\n  specials: [{ name: "Palm Strike", type: "melee", visual: { effect: "arc", color: "#f2c447", secondary: "#ffffff", size: 55, emoji: "✦" }, behavior: { motion: "none" } }]\n};`, portrait_url: null, example: true
 };
 
-let fighters = [kungFuMan], selected = [kungFuMan.id, kungFuMan.id], activeSlot = 0, uploadedPortrait = null, editingId = null;
+let fighters = [kungFuMan], selected = [kungFuMan.id, kungFuMan.id], activeSlot = 0;
 let cursor = 0, rosterColumns = 1;
 let spriteSheet = null, spriteThumbs = {};
 let battle = null, lastFrame = 0, comboReadoutTimer = 0, moveCalloutTimer = 0;
@@ -19,7 +20,14 @@ function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, c => ({"&"
 function fighterById(id) { return fighters.find(f => f.id === id) || kungFuMan; }
 function parseConfig(value) { try { return typeof value === "string" ? JSON.parse(value) : value; } catch { return {}; } }
 function normalizeFighter(row) { return { ...row, config: parseConfig(row.config) }; }
-function avatar(f) { const em = f.config?.emojis?.[0] || "👊"; const sprite = f.example ? spriteThumbs.kung : null; return f.portrait_url ? `<img src="${escapeHtml(f.portrait_url)}" alt="" />` : sprite ? `<img src="${sprite}" alt="" />` : em; }
+function avatar(f) {
+  const em = f.config?.emojis?.[0] || "🥊";
+  // Every forged fighter fights with the same in-battle sprite crop, so that
+  // crop - not a generic emoji - is what a fighter looks like by default.
+  // A custom portrait upload still wins when one exists.
+  const sprite = f.example ? spriteThumbs.kung : spriteThumbs.cyber;
+  return f.portrait_url ? `<img src="${escapeHtml(f.portrait_url)}" alt="" />` : sprite ? `<img src="${sprite}" alt="" />` : em;
+}
 
 async function loadRoster() {
   try {
@@ -101,6 +109,7 @@ function renderDossier(fighter) {
 }
 
 function assignFighter(id, slot = activeSlot) {
+  playSfx("menuSelect", { volume: .7 });
   selected[slot] = id;
   activeSlot = slot === 0 ? 1 : 0;
   renderRoster();
@@ -108,6 +117,7 @@ function assignFighter(id, slot = activeSlot) {
 
 function moveCursor(delta) {
   if (!fighters.length) return;
+  playSfx("menuCursor", { volume: .5, cooldown: .04 });
   cursor = (cursor + delta + fighters.length) % fighters.length;
   renderRoster();
   const card = document.querySelector(`[data-index="${cursor}"]`);
@@ -155,7 +165,7 @@ function renderRoster() {
     const index = Number(node.closest("[data-index]").dataset.index);
     node.onclick = () => { cursor = index; assignFighter(node.dataset.fighter); };
     // Hovering previews a fighter without committing to them.
-    node.onmouseenter = () => { cursor = index; document.querySelectorAll(".fighter-card").forEach((card, i) => card.classList.toggle("focused", i === index)); renderDossier(fighters[index]); };
+    node.onmouseenter = () => { playSfx("menuCursor", { volume: .35, cooldown: .05 }); cursor = index; document.querySelectorAll(".fighter-card").forEach((card, i) => card.classList.toggle("focused", i === index)); renderDossier(fighters[index]); };
   });
   renderDossier(fighters[cursor] || left);
 }
@@ -602,116 +612,6 @@ const rebuiltKungFuConfig = {
 };
 kungFuMan.config = sanitizeFighter(rebuiltKungFuConfig, normalizeMove, rebuiltKungFuConfig);
 kungFuMan.script = buildFighterModule(kungFuMan.config, normalizeMove);
-if ($("#forge-button")) {
-function safeEmojiArray(value) {
-  return extractEmojis(value, ["👊", "⚡", "💥"]);
-}
-function buildScript(data) {
-  return buildFighterModule(data, normalizeMove);
-}
-function fallbackForge(prompt, settings = {}) {
-  const words = prompt.trim().split(/\s+/).filter(Boolean);
-  const name = settings.name || (words.slice(0, 2).map(x => x.replace(/[^a-z0-9]/gi, "")).join(" ") || "Neon Fighter").replace(/\b\w/g, x => x.toUpperCase()).slice(0,24);
-  const emojis = safeEmojiArray(prompt); const buttons = Number(settings.buttons || 4), combo = Number(settings.combo || 3);
-  const specials = settings.specials?.length ? settings.specials : [
-    { name: "Pulse Strike", type: "melee", variant: "medium", visual: { effect: "arc", color: "#f7d35b", secondary: "#ffffff", size: 62, emoji: "✦" }, behavior: { motion: "none", radius: 0 }, animation: { style: "strike", windup: "coil", contact: "fist", finish: "recoil", intensity: .9 } },
-    { name: "Clinch Driver", type: "grapple", variant: "heavy", startup: 9, active: 12, endlag: 28, hitstun: 24, reach: 142, visual: { effect: "grapple", color: "#ff9f43", secondary: "#fff2c2", size: 68, emoji: "⛓" }, behavior: { motion: "grapple", speed: 300, hold: .2, finisher: "slam" }, animation: { style: "grapple", windup: "reach", contact: "grab", finish: "slam", intensity: 1.15 } },
-    { name: "Frost Lock", type: "freeze", variant: "medium", visual: { effect: "freeze", element: "ice", color: "#73e7ff", secondary: "#eefcff", size: 30, emoji: "❄" }, behavior: { motion: "projectile", speed: 360, radius: 28, freeze: .95, status: "freeze", element: "ice" }, animation: { style: "cast", windup: "coil", contact: "energy", finish: "recoil", intensity: .9 } },
-    { name: "Blink Break", type: "teleport", variant: "heavy", visual: { effect: "teleport", element: "shadow", color: "#d28cff", secondary: "#56d9ff", size: 74, emoji: "◇" }, behavior: { motion: "teleport", offset: 92 }, animation: { style: "dash", windup: "hop", contact: "body", finish: "snap", intensity: 1.1 } },
-    { name: "Element Pillar", type: "pillar", variant: "heavy", visual: { effect: "pillar", element: "fire", color: "#ff7043", secondary: "#ffd05d", size: 86, emoji: "▲" }, behavior: { motion: "pillar", radius: 76, lifetime: 1.45, element: "fire" }, animation: { style: "cast", windup: "crouch", contact: "energy", finish: "slam", intensity: 1 } },
-    { name: "Rune Snare", type: "trap", variant: "medium", visual: { effect: "rune", element: "ice", color: "#bd8cff", secondary: "#56d9ff", size: 72, emoji: "◇" }, behavior: { motion: "trap", radius: 68, lifetime: 1.7, status: "freeze", freeze: .65, element: "ice" }, animation: { style: "cast", windup: "crouch", contact: "energy", finish: "recoil", intensity: .8 } },
-    { name: "Flash Arc", type: "projectile", variant: "light", visual: { effect: "orb", color: "#56d9ff", secondary: "#d8ff3e", size: 23, emoji: "⚡" }, behavior: { motion: "projectile", speed: 440, radius: 23, shots: 1 }, animation: { style: "cast", windup: "coil", contact: "energy", finish: "recoil", intensity: .9 } }
-  ];
-  const colors = { color: "#53d8ff", accent: "#ff5b52" };
-  return { name, author: settings.author || "Unknown Author", style: settings.style || prompt.slice(0, 60), personality: settings.personality || "determined", backstory: settings.backstory || "A new challenger steps into the arena.", emojis, buttons, combo, specials: specials.map(move => normalizeMove(move, colors)), color: colors.color, accent: colors.accent, banter: ["The forge has chosen its weapon.", "Let the code speak through combat."] };
-}
-
-async function aiForge(prompt, settings = {}) {
-  const seed = fallbackForge(prompt, settings);
-  if (!window.websim?.chat?.completions?.create) return seed;
-  const specialHint = settings.specials?.map(m => `${m.name} (${m.type}, ${m.startup || "?"}/${m.active || "?"}/${m.endlag || "?"}f, ${m.hitstun || "?"}f stun, ${m.reach || "auto"}px)`).join(", ") || "invent up to 5 suitable specials";
-  const system = `You design original, non-infringing arcade fighting game characters. Return only valid JSON. Schema: {"name":"max 24 chars","author":"max 24 chars","style":"max 60 chars","personality":"max 80 chars","backstory":"max 240 chars","emojis":["emoji"],"buttons":3-6,"combo":1-5,"specials":[{"name":"max 28 chars","type":"melee|projectile|combo|trap|grapple|freeze|teleport|pillar|bomb|gun","variant":"light|medium|heavy|all","launcher":true,"startup":1-60,"active":1-20,"endlag":1-90,"hitstun":1-60,"reach":70-520,"visual":{"effect":"arc|orb|slashes|rune|beam|burst|grapple|freeze|teleport|pillar","element":"fire|ice|stone|lightning|shadow|energy","color":"#RRGGBB","secondary":"#RRGGBB","size":12-130,"emoji":"one symbol","mainVfx":"main asset ID","hitVfx":"hit spark asset ID","vfxFps":6-30,"script":"JavaScript drawing program body"},"behavior":{"motion":"none|projectile|trap|dash|dash-attack|dive-kick|rapid-jab|charge|bomb|pull|grapple|teleport|pillar|gun|wall-slam|spin|multi-uppercut|fly-in|ground-pound","hits":2-10,"hitInterval":0.04-0.2,"carrySpeed":420-1500,"rise":120-620,"flySpeed":320-1100,"flyHeight":0-260,"slamSpeed":480-1600,"shockRadius":90-420,"pattern":"straight|arc|fan|boomerang|orbit|rain","rapidHits":2-8,"rapidInterval":0.045-0.18,"status":"none|freeze","element":"fire|ice|stone|lightning|shadow|energy","speed":0-700,"gravity":-1600-1600,"homing":0-1,"spread":-75-75,"bounces":0-3,"orbitRadius":24-220,"orbitSpeed":-12-12,"returnDelay":0.15-1.5,"radius":0-140,"shots":1-3,"lifetime":0.35-3,"hold":0.08-1.2,"freeze":0.25-2.5,"offset":40-180,"charge":0.12-2.5,"chargePower":0.7-2.5,"dashDistance":30-300,"fuse":0.18-2.5,"finisher":"slam|throw"},"animation":{"style":"strike|kick|spin|grapple|slam|dash|cast","gesture":"jab|cross|hook|elbow|palm|knee|roundhouse|sweep|overhead|thrust|slam|spin|burst|cast|dive kick|ora barrage|custom","windup":"none|coil|crouch|reach|hop|spin","contact":"fist|foot|grab|hook|body|energy|slash","finish":"recoil|follow-through|throw|slam|spin|snap|hold","intensity":0.45-1.6,"transform":"optional freeform rotation/scale/skew/offset object"}}],"color":"#RRGGBB","accent":"#RRGGBB","banter":["short pre-fight line","short reply"]}. Use the uploaded Fighter Forge VFX bank when choosing move visuals. For mainVfx choose from main_slash_color1, main_slash2_color1, main_slash3_color2, main_slash3_color3, main_vfx_start, main_vfx_repeatable, main_wood_repeatable, main_firework, main_musicburst, main_stylized_explosion. For hitVfx choose from hit_round_spark, hit_firework, hit_directional, hit_middle_directional, hit_bottom_directional, hit_symmetrical_1, hit_symmetrical_2, hit_symmetrical_3, hit_stylized_explosion, hit_vfx_pack, hit_wood. Match hit sparks to the move: directional for launches or side hits, round/symmetrical for clean contact, wood for slams, and stylized explosion/firework for finishers. Every special MUST have a visual, visual.script, behavior, animation recipe, mainVfx, and hitVfx. visual.script is literal JavaScript code executed by a restricted canvas API; return only the function body, no markdown and no function wrapper. The API is api.line(x1,y1,x2,y2,color,width,alpha), api.arc(x,y,r,start,end,color,width,alpha), api.ring(x,y,r,color,width,alpha), api.circle(x,y,r,fill,stroke,width,alpha), api.spark(x,y,r,color,count,rotation), api.glow(color,blur), and api.asset(vfxId,x,y,size,alpha,rotation). The script receives t seconds, p normalized progress, active boolean, size, color, secondary, move, and Math. Use loops, trigonometry, p, and t to make every move's geometry and timing unique. Do not use window, document, DOM, network, storage, timers, imports, constructors, or globals. Make visuals and animation clearly different between moves: punches can snap, kicks can extend, spins can rotate, projectiles can cast, grapples must reach, lock, pull, then throw or slam. Projectiles may combine path patterns: arc uses gravity, fan uses spread, boomerang returns after returnDelay, orbit circles its spawn point, rain drops from above, and homing bends toward the victim. Gun moves use type gun and motion gun: a fast flat bullet with a muzzle flash, long reach, short startup and heavy endlag; use shots for burst fire. Wall-slam moves use motion wall-slam: a close-range blow that sends the victim skidding into the nearest wall for bonus damage, so give them carrySpeed and a heavy feel. Spin moves use motion spin with hits and hitInterval: a rotating multi-hit that connects on both sides of the attacker at close range. Multi-uppercut moves use motion multi-uppercut with hits and rise: a rising launcher that carries both fighters upward on every hit; they are always launchers. Fly-in moves use motion fly-in with flySpeed and flyHeight: the attacker leaves the ground and rockets across the screen at the opponent, optionally multi-hit via hits. Ground-pound moves use motion ground-pound with slamSpeed and shockRadius: the attacker slams down from the air and the landing shockwave only catches grounded opponents. Rapid-jab moves must land 2-8 fast fist contacts across their active window, using rapidHits and rapidInterval; name them with a jab/barrage/flurry/ora/rush cue and use a punch gesture. Dive-kick moves must be air:true, use motion dive-kick, angle the attacker downward, accelerate toward the floor, and bounce or recoil after contact. Chain at least one rapid jab into a launcher/uppercut when the fighter is a rushdown type. Charge moves must visibly hold power during startup, then release with chargePower. Dash-attack moves must travel dashDistance during their active strike. Bomb moves must throw a timed explosive with fuse, radius, knockback, and a burst VFX; use fire or energy. Freeze moves must stop the opponent briefly and use frost/ice visuals. Teleports must blink the attacker to a new position before their hit. Pillars must spawn a tall elemental hazard from the floor; choose fire, ice, stone, lightning, shadow, or energy. Traps must remain on the floor and can optionally freeze a victim. Include at least one grapple, freeze, teleport, pillar, trap, charge, dash-attack, or bomb special when it fits the fighter; use all requested concepts when the prompt asks for them. Use arc or beam for melee, orb or beam for projectiles, slashes or burst for combos and bombs, rune for traps, grapple for grapples, freeze for freeze moves, teleport for teleports, and pillar for pillars. Use behavior to explain how the move moves, spawns, or affects the opponent. Make at least one close-range melee special a launcher when it fits the fighter. Startup, active, endlag, and hitstun are frame counts at 60fps; reach is pixels and may be omitted for automatic type-based reach. Do not use copyrighted character names. Keep specials 1-5 and usable in an aggressive AI-versus-AI match.`;
-  const freeformMotionGuide = `Each attack may include juggle cost 1-15; launchers start the opponent with a finite juggle budget so air strings cannot loop forever. Give every move a distinct animation.gesture such as jab, cross, hook, elbow, palm, knee, roundhouse, sweep, overhead, thrust, slam, spin, burst, cast, or any short custom label so the fighter's silhouette and VFX read differently. Combine behavior.motion with behavior.pattern and its path controls to create unusual attacks rather than forcing every special into a straight projectile. For expressive combat motion, every move may also include behavior.knockback {horizontal:0-900, vertical:0-900, power:0-900, angle:-80-80, direction:"away|toward|up|down", hitstop:0-0.2, carry:true|false, wallBounce:true|false, groundBounce:true|false}. The animation may include a freeform transform object {rotateX:-360-360, rotateY:-360-360, rotateZ:-360-360, spin:-720-720, spinSpeed:-12-12, scaleX:0.35-2.4, scaleY:0.35-2.4, skewX:-0.95-0.95, skewY:-0.95-0.95, offsetX:-180-180, offsetY:-180-180, orbit:-1-1, pulse:0-1}. Use any combination of these values: rotateZ is a real spin, rotateX/rotateY become squash and skew for a 3D-style turn, and offsets/scales can make each move feel radically different. These are declarative motion controls interpreted by the arena, so do not return executable JavaScript.`;
-  const expandedSystem = `${system} ${freeformMotionGuide}`;
-  const userText = `Prompt: ${prompt}\nIdentity lock: keep the provided character name exactly as written (${settings.name || "invent only if blank"}) and keep the provided author exactly as written (${settings.author || "Forge Author"}). Never invent or replace a locked identity field. Requested buttons: ${settings.buttons || "any"}; combo: ${settings.combo || "any"}; personality: ${settings.personality || "invent"}; backstory: ${settings.backstory || "invent"}; desired moves: ${specialHint}.`;
-  try {
-    const completion = await window.websim.chat.completions.create({ messages: [{ role: "system", content: expandedSystem }, { role: "user", content: userText }], json: true });
-    const made = parseAiJson(completion.content);
-    const normalized = sanitizeFighter(made, normalizeMove, seed);
-    // Identity belongs to the creator, not the model. The AI can design the
-    // combatant around these fields, but it must never replace them.
-    if (settings.name?.trim()) normalized.name = settings.name.trim().slice(0, 24);
-    if (settings.author?.trim()) normalized.author = settings.author.trim().slice(0, 24);
-    return normalized;
-  } catch { return seed; }
-}
-
-async function saveFighter(data, prompt, portraitUrl) {
-  const script = buildScript(data);
-  const payload = { name: data.name, author: data.author, prompt, config: data, script, portraitUrl };
-  const res = await fetch("/api/fighters", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(payload) });
-  const result = await res.json();
-  if (!res.ok) throw new Error(result.error || "Save failed");
-  const row = normalizeFighter(result.fighter); fighters.splice(1, 0, row); selected = [row.id, kungFuMan.id]; activeSlot = 1; renderRoster(); return row;
-}
-
-async function updateFighter(id, data, prompt, portraitUrl) {
-  const script = buildScript(data);
-  const payload = { name: data.name, author: data.author, prompt, config: data, script, portraitUrl };
-  const res = await fetch(`/api/fighters/${encodeURIComponent(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-  const result = await res.json();
-  if (!res.ok) throw new Error(result.error || "Update failed");
-  const row = normalizeFighter(result.fighter), index = fighters.findIndex(f => f.id === id);
-  if (index >= 0) fighters[index] = row;
-  renderRoster();
-  return row;
-}
-
-$("#forge-button").onclick = async () => {
-  const prompt = $("#prompt").value.trim(), status = $("#forge-status");
-  if (prompt.length < 8) { status.textContent = "Give the forge a little more to work with."; return; }
-  $("#forge-button").disabled = true;
-  const simpleSettings = { buttons: $("#simple-buttons").value, combo: $("#simple-combo").value, author: $("#simple-author").value.trim() || "Forge Author", name: $("#simple-name").value.trim(), personality: $("#simple-personality").value.trim(), backstory: $("#simple-backstory").value.trim() };
-  if (editingId) {
-    const current = fighterById(editingId), data = { ...(current.config || {}), name: simpleSettings.name || current.name, author: simpleSettings.author, personality: simpleSettings.personality, backstory: simpleSettings.backstory, buttons: Number(simpleSettings.buttons), combo: Number(simpleSettings.combo) };
-    status.textContent = "Saving fighter changes…";
-    try { const fighter = await updateFighter(editingId, data, prompt, uploadedPortrait || current.portrait_url || null); status.textContent = `${fighter.name} updated.`; resetEditorMode(); showView("roster"); }
-    catch (e) { status.textContent = e.message; }
-    $("#forge-button").disabled = false;
-    return;
-  }
-  status.textContent = "AI is writing the combat profile…";
-  const made = await aiForge(prompt, simpleSettings);
-  if (simpleSettings.name) made.name = simpleSettings.name;
-  if (simpleSettings.author) made.author = simpleSettings.author;
-  if (simpleSettings.personality) made.personality = simpleSettings.personality;
-  if (simpleSettings.backstory) made.backstory = simpleSettings.backstory;
-  try { const fighter = await saveFighter(made, prompt, uploadedPortrait); status.textContent = `${fighter.name} is ready to select.`; showView("roster"); }
-  catch (e) { status.textContent = e.message; }
-  $("#forge-button").disabled = false;
-};
-
-$("#cancel-edit").onclick = () => { resetEditorMode(); $("#forge-status").textContent = ""; showView("roster"); };
-
-function advancedSettings() {
-  const specials = [...document.querySelectorAll("#special-list .special")].map(row => {
-    const type = row.querySelector("select").value, defaults = moveFrameDefaults(type);
-    const clamp = (value, min, max, fallback) => Math.min(max, Math.max(min, Number(value) || fallback));
-    return { name: row.querySelector("input").value.trim(), type, variant: "all", startup: clamp(row.querySelector(".move-startup").value, 1, 60, defaults.startup), active: clamp(row.querySelector(".move-active").value, 1, 20, defaults.active), endlag: clamp(row.querySelector(".move-endlag").value, 1, 90, defaults.endlag), hitstun: clamp(row.querySelector(".move-hitstun").value, 1, 60, defaults.hitstun) };
-  }).filter(x => x.name).slice(0,5);
-  return { name: $("#adv-name").value.trim(), author: $("#adv-author").value.trim() || "Forge Author", style: $("#adv-style").value.trim(), buttons: $("#adv-buttons").value, combo: $("#adv-combo").value, specials };
-}
-$("#advanced-forge").onclick = async () => {
-  const settings = advancedSettings(), status = $("#advanced-status");
-  const prompt = `${settings.style || "Original arcade fighter"}. Attacks: ${$("#adv-attacks").value}.`;
-  status.textContent = "Compiling fighter JavaScript…"; $("#advanced-forge").disabled = true;
-  const made = await aiForge(prompt, settings); made.emojis = safeEmojiArray($("#adv-attacks").value); made.author = settings.author; if (settings.name) made.name = settings.name;
-  $("#code-preview").textContent = buildScript(made);
-  try { const fighter = await saveFighter(made, prompt, uploadedPortrait); status.textContent = `${fighter.name} is ready to select.`; showView("roster"); }
-  catch (e) { status.textContent = e.message; }
-  $("#advanced-forge").disabled = false;
-};
-}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -726,9 +626,12 @@ const RULES = {
   meterOnDealt: .55, meterOnTaken: .95, meterOnBlocked: .38, meterOnWhiff: .8,
   guardMax: 100, guardRegen: 23, guardCostBase: 2.2, guardCostScale: .85, guardImmuneAfterBreak: 1.6,
   guardBreakStun: 1.05, chipRatio: .12, blockPushback: 190, blockstunRatio: .74,
-  comboScaleStep: .87, minScale: .3,
-  juggleGravityStep: .13, maxJuggleGravity: 2.3, juggleStart: .78,
-  juggleBudget: 16, juggleCostDefault: 2, launchHeight: 700,
+  // Long combos are a style flex, not a kill: damage scales down hard and
+  // bottoms out low, so a 40-hit route does less than four clean hits.
+  comboScaleStep: .9, minScale: .08, scalingFloorHits: 24,
+  comboMaxHits: 48, gatlingDepth: 4, airStringDepth: 5,
+  juggleGravityStep: .045, maxJuggleGravity: 1.9, juggleStart: .62,
+  juggleBudget: 46, juggleCostDefault: 1, launchHeight: 760,
   techWindow: .16, hardKnockdown: .92, softKnockdown: .58, wakeupInvuln: .3,
   counterDamage: 1.35, counterHitstun: 1.45,
   gravity: 1700, koSlowmo: .26
@@ -798,6 +701,7 @@ function showBanner(text, duration = 1.1, tone = "") {
 function hideBanner() { const el = $("#result"); el.classList.remove("show"); el.removeAttribute("data-tone"); if (battle) battle.bannerTimer = 0; }
 function beginRoundProper() {
   battle.phase = "fight"; battle.elapsed = 0; battle.clock = RULES.roundTime; clearBanter();
+  playSfx("getSet", { volume: .85 });
   showBanner("FIGHT!", .75, "go");
 }
 function makeCombatant(fighter,x,dir) {
@@ -808,7 +712,7 @@ function makeCombatant(fighter,x,dir) {
   const examplePenalty = fighter.example ? .08 : 0, skill = Math.min(.9, Math.max(.48, .6 + (aptitude - 2) * .05 - examplePenalty + (Math.random() - .5) * .07));
   const c = { fighter, x, y:RULES.floorY, vy:0, vx:0, grounded:true, hp:RULES.maxHp, dir, hurt:0, frozen:0, invuln:0, hitstunFrames:0, recovery:null, recoveryAttempted:false, recoveryCooldown:0, attack:0, attackState:null, pose:"idle", cd:0, jumpCd:.2, crouch:0, running:false, runJump:false, blocking:false, blockTimer:0, blockFlash:0, trail:[], effects:[], dodge:0, airComboTarget:null, airComboTimer:0, airComboJumpQueued:false, airComboHits:0, juggle:0, juggleGravity:1, comboPlan:null, comboStep:0, comboPlanSerial:0, grappleTarget:null, grappledBy:null, grappledState:null, grappleLock:0,
     meter:0, guard:RULES.guardMax, guardBroken:0, guardImmune:0, wallSlam:null, blockLow:false, guardFlash:0, down:null, techTimer:0, counterFlash:0, superFlash:0, backdash:0, damageTaken:0,
-    combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.min(6, 2 + Math.ceil(aptitude / 2)) } };
+    combo:{ count:0, timer:0, target:null, scale:1, damage:0, max:Math.round(14 + aptitude * 7) } };
   const archetype = fighterArchetype(c);
   c.ai = { skill, archetype, profile:{ ...ARCHETYPES[archetype] }, lastMoveKey:"", hesitation:0,
     intent:"neutral", intentTimer:0, think:Math.random() * .1, reaction:Math.max(.075, .27 - skill * .21),
@@ -838,7 +742,13 @@ function showComboReadout(me, count) {
   if (comboReadoutTimer) clearTimeout(comboReadoutTimer);
   comboReadoutTimer = setTimeout(() => { el.classList.remove("show"); el.classList.add("leaving"); comboReadoutTimer = setTimeout(() => { el.classList.remove("leaving"); el.removeAttribute("data-side"); }, 330); }, 700);
 }
-$("#start-match").onclick = startBattle; $("#rematch").onclick = () => { activeSlot = 0; renderRoster(); startBattle(); };
+const sfxToggle = $("#sfx-toggle");
+if (sfxToggle) {
+  const paintSfxToggle = () => { const off = isSfxMuted(); sfxToggle.textContent = off ? "♪ MUTED" : "♪ SOUND"; sfxToggle.classList.toggle("muted", off); sfxToggle.setAttribute("aria-pressed", String(!off)); };
+  paintSfxToggle();
+  sfxToggle.onclick = () => { toggleSfxMuted(); paintSfxToggle(); playSfx("menuOk", { volume: .7 }); };
+}
+$("#start-match").onclick = () => { playSfx("menuStart", { volume: .9 }); startBattle(); }; $("#rematch").onclick = () => { playSfx("menuStart", { volume: .9 }); activeSlot = 0; renderRoster(); startBattle(); };
 
 function fightTick(dt) {
   if (!battle) return;
@@ -952,12 +862,16 @@ function moveRole(move) {
   if (/kick|heel|knee/.test(name)) return `${air ? "air-" : ""}${crouch ? `${tier}-crouch` : tier}-kick`;
   return air ? "air-special" : "special";
 }
-function canLink(previous, next, previousVariant = "ground", nextVariant = "ground") {
+function canLink(previous, next, previousVariant = "ground", nextVariant = "ground", mode = "link") {
   if (!previous || !next) return true;
   const from = moveFrames(previous, previousVariant), into = moveFrames(next, nextVariant);
   const reach = Number(previous?.reach) > 0 && Number(next?.reach) > 0 ? Number(next.reach) + 18 >= Number(previous.reach) * .58 : true;
   const rapidBuffer = isRapidJab(previous) ? 8 : 0;
-  return reach && from.hitstun + rapidBuffer >= from.endlag + into.startup + 1;
+  // A cancel interrupts the previous move's recovery - that is what makes
+  // "normal into special" work at all. A gatling chain gets a smaller
+  // discount. A raw link has to beat the full endlag on frame data alone.
+  const recovery = mode === "cancel" ? from.endlag * .15 : mode === "gatling" ? from.endlag * .55 : from.endlag;
+  return reach && from.hitstun + rapidBuffer >= recovery + into.startup + 1;
 }
 function comboCandidates(moves, phase, used = new Set()) {
   const pool = phase === "air" ? airComboMoves(moves) : moves;
@@ -992,43 +906,112 @@ function findGroundRoute(moves, launcher) {
   visit([], new Set([launcher]), null, "ground", 0);
   return best?.route || null;
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// COMBO ROUTING
+// A real route has stages, the way a fighting game does:
+//   neutral normals -> gatling into heavier normals -> cancel into a special
+//   -> launcher -> air string -> air finisher
+// Each stage has its own rules about what may follow what, so a long combo is
+// built out of legitimate links rather than repeating one strong button.
+// ─────────────────────────────────────────────────────────────────────────────
+function moveCategory(move) {
+  if (move?.category === "normal" || move?.category === "special") return move.category;
+  const rangedType = isRanged(move) || isGrapple(move);
+  if (rangedType || isLauncher(move) || moveFrames(move).startup > 10) return "special";
+  return "normal";
+}
+function moveWeight(move) {
+  const variant = String(move?.variant || "medium");
+  if (variant === "light") return 1;
+  if (variant === "heavy") return 3;
+  return 2;
+}
+// How many times this move actually connects, so the planner can reason about
+// real hit counts instead of assuming one hit per button.
+function moveHitCount(move) {
+  const profile = multiHitProfile(move);
+  return profile ? profile.hits : 1;
+}
+
+// Normals gatling upward in weight; that is what makes a neutral string feel
+// like a chain instead of a mash.
+function buildGatlingString(normals, depth) {
+  const pool = normals.slice().sort((a, b) => moveWeight(a) - moveWeight(b) || moveFrames(a).startup - moveFrames(b).startup);
+  const route = [];
+  let lastWeight = 0, previous = null;
+  for (const move of pool) {
+    if (route.length >= depth) break;
+    const weight = moveWeight(move);
+    if (weight < lastWeight) continue;
+    if (previous && !canLink(previous, move, "ground", move.crouch ? "crouch" : "ground", "gatling")) continue;
+    route.push({ move, crouch: move.crouch === true || moveRole(move).includes("crouch") });
+    lastWeight = weight; previous = move;
+  }
+  return { route, previous };
+}
+
 function buildComboPlan(me, foe) {
-  const moves = combatMoves(me), groundedMoves = moves.filter(move => !isRanged(move) && !isGrapple(move) && !isDiveKick(move));
-  if (groundedMoves.length < 2) return null;
-  const launcher = groundedMoves.find(isLauncher);
-  let ground = launcher ? findGroundRoute(moves, launcher) : null;
-  const rapidJab = groundedMoves.find(isRapidJab);
-  // Give pressure fighters a real branching route: a short barrage can
-  // cash out into an uppercut, while normal routes still appear often enough
-  // that the AI does not look like it is repeating a canned sequence.
-  if (rapidJab && launcher && canLink(rapidJab, launcher) && Math.random() < .7) {
-    ground = [{ move:rapidJab, crouch:false }];
+  const moves = combatMoves(me);
+  const usable = moves.filter(move => !isRanged(move) && !isGrapple(move) && !isDiveKick(move));
+  if (!usable.length) return null;
+
+  const normals = usable.filter(move => moveCategory(move) === "normal" && !isLauncher(move));
+  const specials = usable.filter(move => moveCategory(move) === "special" && !isLauncher(move));
+  const launcher = usable.find(isLauncher) || usable.find(isMultiUppercut) || null;
+  const skill = me.ai?.skill || .64;
+  const depth = Math.max(2, Math.round(RULES.gatlingDepth * (.55 + skill * .7)));
+
+  // ── Stage 1: neutral normals, gatlinged light -> heavy ────────────────────
+  const used = new Set();
+  const gatling = buildGatlingString(normals, depth);
+  const steps = [{ action: "dash" }];
+  for (const step of gatling.route) { steps.push(step); used.add(step.move); }
+  let previous = gatling.previous;
+
+  // ── Stage 2: cancel the string into a special ─────────────────────────────
+  // This is the payoff for the neutral string, and the bridge to the launcher.
+  const cancelInto = specials
+    .filter(move => !used.has(move))
+    .sort((a, b) => moveHitCount(b) - moveHitCount(a) || moveFrames(a).startup - moveFrames(b).startup);
+  for (const move of cancelInto) {
+    if (previous && !canLink(previous, move, "ground", "ground", "cancel")) continue;
+    steps.push({ move, cancel: true }); used.add(move); previous = move;
+    break;
   }
-  // A visually useful ground chain should still exist for characters whose
-  // generated moveset has no explicitly named launcher.
-  if (!ground || !ground.length) {
-    const candidates = groundedMoves.filter(move => move !== launcher && !isLauncher(move)).sort((a, b) => moveFrames(a).startup - moveFrames(b).startup);
-    ground = candidates.slice(0, Math.min(2, candidates.length)).map(move => ({ move, crouch: move.crouch === true || moveRole(move).includes("crouch") }));
-    if (ground.length < 2 && launcher) ground = groundedMoves.filter(move => move !== launcher).slice(0, 2).map(move => ({ move, crouch:false }));
+
+  // ── Stage 3: launcher ─────────────────────────────────────────────────────
+  let airborne = false;
+  if (launcher && !used.has(launcher)) {
+    steps.push({ move: launcher, launcher: true }); used.add(launcher); previous = launcher; airborne = true;
   }
-  if (!ground.length) return null;
-  const groundLimit = me.ai?.skill > .72 ? 3 : 2;
-  ground = ground.slice(0, groundLimit);
-  const used = new Set([...(launcher ? [launcher] : []), ...ground.map(step => step.move)]), air = [];
-  let previous = launcher || ground.at(-1)?.move;
-  if (launcher) {
-    const airCandidates = comboCandidates(moves, "air", used).sort((a, b) => {
-      const roleA = moveRole(a), roleB = moveRole(b), rank = role => ({"air-light-punch":1,"air-medium-punch":2,"air-medium-kick":3,"air-special":4}[role] || 5);
-      return rank(roleA) - rank(roleB) || moveFrames(a).startup - moveFrames(b).startup || (Math.random() - .5);
+
+  // ── Stage 4: air string, then an air finisher ─────────────────────────────
+  if (airborne) {
+    const airPool = comboCandidates(moves, "air", used).sort((a, b) => {
+      const rank = (move) => ({ "air-light-punch": 1, "air-medium-punch": 2, "air-medium-kick": 3, "air-special": 4 }[moveRole(move)] || 5);
+      return rank(a) - rank(b) || moveFrames(a).startup - moveFrames(b).startup;
     });
-    for (const move of airCandidates) {
-      if (!canLink(previous, move, previous === launcher ? "ground" : "air", "air")) continue;
-      air.push({ move, air:true }); used.add(move); previous = move;
-      if (air.length >= 2) break;
+    const airDepth = Math.max(2, Math.round(RULES.airStringDepth * (.5 + skill * .8)));
+    for (const move of airPool) {
+      if (steps.filter(step => step.air).length >= airDepth) break;
+      if (previous && !canLink(previous, move, previous === launcher ? "ground" : "air", "air", "cancel")) continue;
+      steps.push({ move, air: true }); used.add(move); previous = move;
     }
+    // Finish on the flashiest unused air-capable option when one is left.
+    const finisher = moves.find(move => !used.has(move) && !isRanged(move) && !isGrapple(move) && (move.air === true || isDiveKick(move) || isAirComboMove(move)));
+    if (finisher) steps.push({ move: finisher, air: true, finisher: true });
   }
+
+  const realSteps = steps.filter(step => step.move);
+  if (realSteps.length < 2) return null;
+
   me.comboPlanSerial += 1;
-  me.comboPlan = { id:me.comboPlanSerial, target:foe, dashTimer:.12, reliability:Math.min(.86, Math.max(.5, me.ai?.skill || .64)), steps:[{ action:"dash" }, ...ground, ...(launcher ? [{ move:launcher }, ...air] : [])] };
+  me.comboPlan = {
+    id: me.comboPlanSerial, target: foe, dashTimer: .12,
+    reliability: Math.min(.94, Math.max(.55, skill + .1)),
+    projectedHits: realSteps.reduce((total, step) => total + moveHitCount(step.move), 0),
+    steps
+  };
   me.comboStep = 0;
   return me.comboPlan;
 }
@@ -1038,12 +1021,12 @@ function airComboApproach(me, foe, move) {
   me.dir = chaseDir;
   const reach = moveHitRange(move, "air"), idealGap = Math.min(96, Math.max(40, reach * .42));
   const desiredX = foe.x - chaseDir * idealGap, error = desiredX - me.x;
-  me.vx = Math.max(-430, Math.min(430, error * 7.8));
+  me.vx = Math.max(-520, Math.min(520, error * 9.5));
   if (Math.abs(error) < 22) me.vx *= .45;
   // Keep the attacker on the same vertical slice as the launched target;
   // horizontal chase alone was making the next air button pass underneath.
   const verticalError = foe.y - me.y;
-  if (Math.abs(verticalError) > 18) me.vy = Math.max(-800, Math.min(600, me.vy + verticalError * 4.2));
+  if (Math.abs(verticalError) > 14) me.vy = Math.max(-860, Math.min(660, me.vy + verticalError * 5.6));
   me.running = false;
   return { distance:Math.abs(foe.x - me.x), vertical:Math.abs(foe.y - me.y), error };
 }
@@ -1055,7 +1038,8 @@ function updatePlannedCombo(me, foe, dt) {
   me.dir = foe.x >= me.x ? 1 : -1;
   const distance = Math.abs(foe.x - me.x);
   const incomingRange = foe.attackState?.hitRange || 0;
-  if (foe.attackState && me.cd === 0 && distance < incomingRange + 34 && Math.random() < dt * (.55 + (me.ai?.skill || .62) * .65)) {
+  const comboLive = me.combo.count > 0 && me.combo.target === foe && foe.hurt > 0;
+  if (!comboLive && foe.attackState && me.cd === 0 && distance < incomingRange + 34 && Math.random() < dt * (.55 + (me.ai?.skill || .62) * .65)) {
     cancelComboPlan(me); if (me.ai) me.ai.hesitation = .1 + Math.random() * .12; return false;
   }
   if (step.action === "dash") {
@@ -1063,13 +1047,18 @@ function updatePlannedCombo(me, foe, dt) {
     if (plan.dashTimer <= 0 || distance < 275) me.comboStep++;
     return true;
   }
-  // Test each link once, at the moment it is about to be attempted. This
-  // keeps combo routes intentional without making the AI look scripted or
-  // allowing Kung Fu Man's fast normals to become an automatic perfect loop.
+  // Execution risk lives at the start of a route, not spread across it. Once
+  // the combo is actually connecting the fighter commits, which is what lets a
+  // long confirmed string play out instead of dissolving a few links in.
   if (!step.linkChecked && me.comboStep > 1) {
     step.linkChecked = true;
-    if (Math.random() > (plan.reliability || .64)) { cancelComboPlan(me); me.ai.hesitation = .12 + Math.random() * .12; return false; }
+    const confirmed = me.combo.count >= 2 && me.combo.target === foe;
+    const reliability = confirmed ? Math.min(.995, (plan.reliability || .64) + .3) : (plan.reliability || .64);
+    if (Math.random() > reliability) { cancelComboPlan(me); me.ai.hesitation = .12 + Math.random() * .12; return false; }
   }
+  // A cancel skips the previous move's recovery, so the next button is
+  // available immediately rather than after the usual chain cooldown.
+  if (step.cancel && me.cd > 0 && me.combo.count > 0) me.cd = 0;
   if (step.air && me.grounded) { me.jumpCd=0; startJump(me, true, foe); return true; }
   if (!step.air && !me.grounded) return true;
   const reach = moveReach(step.move, step.air ? "air" : me.crouch > 0 ? "crouch" : "ground");
@@ -1272,7 +1261,7 @@ function executeIntent(me, foe, dt, distance, chainReady) {
     case "evade": {
       // A backdash with a short invulnerable window; the classic way out of
       // pressure that does not burn guard meter.
-      if (me.backdash === 0) { me.backdash = .5; me.dodge = .34; me.vx = -me.dir * (330 + skill * 90); me.pose = "evade"; }
+      if (me.backdash === 0) { me.backdash = .5; me.dodge = .34; me.vx = -me.dir * (330 + skill * 90); me.pose = "evade"; playSfx("airBackdash", { pan: panFromX(me.x), volume: .45 }); }
       else me.vx *= .9;
       return;
     }
@@ -1349,7 +1338,7 @@ function executeIntent(me, foe, dt, distance, chainReady) {
     }
     case "pressure": {
       if (chainReady && me.cd === 0 && aiTryAttack(me, foe, me.crouch > 0 ? "crouch" : "ground", "chain", 1)) return;
-      if (!me.comboPlan && me.cd === 0 && ai.hesitation === 0 && distance < 330 && Math.random() < dt * (1.1 + skill * 1.3)) {
+      if (!me.comboPlan && me.cd === 0 && ai.hesitation === 0 && distance < 340) {
         if (buildComboPlan(me, foe)) { updatePlannedCombo(me, foe, dt); return; }
       }
       const wantLauncher = distance < 215 && Math.random() < .1 + skill * .18;
@@ -1512,6 +1501,7 @@ function startJump(me, running=false, target=null) {
     me.vy=-655; me.vx=me.dir*(running ? 300 : 185);
   }
   me.jumpCd=.9; me.pose=running ? "run-jump" : "jump";
+  playSfx(running ? "jumpRun" : "jumpHigh", { pan: panFromX(me.x), volume: .4, cooldown: .1 });
   return true;
 }
 function startBlock(me, duration = .5, low = false) {
@@ -1536,8 +1526,37 @@ function startRecovery(me, foe) {
   else { me.grounded = false; me.vy = -475; me.y = Math.max(420, me.y - 2); me.pose = "recover-ground"; }
   const attacker = battle.fighters.find(fighter => fighter !== me);
   if (attacker) { attacker.airComboTarget = null; attacker.airComboTimer = 0; attacker.airComboJumpQueued = false; resetCombo(attacker); attacker.comboPlan = null; attacker.comboStep = 0; }
+  playSfx("recover", { pan: panFromX(me.x), volume: .7 });
   me.effects.push({ kind: "recovery", t: me.recovery.duration, x: me.x, y: me.y, color: me.fighter.config?.color || "#d8ff3e", size: airborne ? 44 : 58 });
   return true;
+}
+// Pick the swing/cast sound that matches what this move physically is, so a
+// sword-weight heavy and a quick jab never share the same whoosh.
+function swingSoundFor(move, variant) {
+  if (isGun(move)) return "electric";
+  if (isBomb(move)) return "blaze";
+  if (isFreeze(move)) return "freezeCast";
+  if (isPillar(move)) return "quake";
+  if (move?.type === "trap") return "magicCircle";
+  if (isTeleport(move)) return "electric";
+  if (isGrapple(move)) return "grappleSwing";
+  if (isSpin(move)) return "spinSwing";
+  if (isGroundPound(move)) return "quake";
+  if (isWallSlam(move)) return "swingHeavy";
+  if (isFlyIn(move)) return "airDash";
+  if (isMultiUppercut(move)) return "swingMedium";
+  if (isRapidJab(move)) return "swingLight";
+  if (isRanged(move)) return "magicCircle";
+  if (variant === "crouch" || isLowHit(move, variant)) return "swingLow";
+  const element = String(move?.visual?.element || move?.behavior?.element || "");
+  if (element === "lightning") return "electric";
+  if (element === "fire") return "blaze";
+  if (element === "ice") return "freezeCast";
+  if (Number(move?.reach) > 260) return "swingReach";
+  const gesture = String(move?.animation?.gesture || "");
+  if (/thrust|stab|pierce|spear/i.test(gesture)) return "stab";
+  const tier = String(move?.variant || "medium");
+  return tier === "heavy" ? "swingHeavy" : tier === "light" ? "swingLight" : "swingMedium";
 }
 function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
   if (me.blocking || me.grappledBy || me.down || me.guardBroken > 0) return;
@@ -1585,6 +1604,9 @@ function startAttack(me, foe, forcedMove, comboStep = null, mods = {}) {
     me.superFlash = .55; me.invuln = Math.max(me.invuln, variantStartup / 60 + .06);
     addHitstop(.24); addShake(.3); camera.focus = me;
   } else if (exMove) { me.superFlash = .25; addShake(.1); }
+  playSfx(swingSoundFor(move, variant), { pan: panFromX(me.x), volume: superMove ? .9 : .55, cooldown: rapidJab ? .06 : 0 });
+  if (superMove) playSfx("superStart", { volume: .85 });
+  else if (exMove) playSfx("exFlourish", { volume: .7 });
   showMoveCallout(me, me.attackState);
   // Attack duration already contains endlag. A second long cooldown here was
   // making valid links start after the defender had recovered.
@@ -1649,7 +1671,9 @@ function updateAttack(me, foe, dt) {
   // that window at a fixed cadence, creating a readable multi-hit flurry.
   const rapidReady = state.rapidJab && state.rapidHitCount < state.rapidHits && state.t >= (state.rapidHitCount ? state.nextRapidHitAt : activeStart);
   if (!state.projectile && !state.bomb && (!state.resolved || rapidReady) && state.t >= activeStart && state.t <= activeEnd) {
-    const evaded = foe.dodge > 0 && Math.random() < Math.min(.65, foe.dodge*.7);
+    // A dodge is an escape from neutral, never an escape from a combo: a
+    // fighter already in hitstun cannot evade the next link.
+    const evaded = foe.dodge > 0 && foe.hurt <= 0 && !foe.grappledBy && Math.random() < Math.min(.5, foe.dodge * .7);
     const juggleBlocked = state.variant === "air" && !foe.grounded && foe.juggle <= 0;
     if (meleeHitboxConnects(me, foe, state) && !evaded && !juggleBlocked && (!state.rapidJab || rapidReady)) {
       if (!state.rapidJab) state.resolved = true;
@@ -1687,9 +1711,23 @@ function updateAttack(me, foe, dt) {
     const launchJump = state.launcher && me.airComboJumpQueued && me.grounded && !foe.grounded;
     if (state.comboPlanId && me.comboPlan?.id === state.comboPlanId && state.comboStep !== null) {
       if (state.hitConfirmed) { me.comboPlan.linkRetryCount = 0; me.comboStep = state.comboStep + 1; if (!me.comboPlan.steps[me.comboStep]) cancelComboPlan(me); }
+      else if (state.blocked) {
+        // They guarded it. Real players do not launch a blocking opponent, so
+        // the route downgrades to a blockstring: keep the pressure, and skip
+        // the launcher and air string that could never connect.
+        me.comboPlan.blockstring = true; me.comboPlan.linkRetryCount = 0;
+        me.comboStep = state.comboStep + 1;
+        while (me.comboPlan.steps[me.comboStep] && (me.comboPlan.steps[me.comboStep].launcher || me.comboPlan.steps[me.comboStep].air)) me.comboStep++;
+        if (!me.comboPlan.steps[me.comboStep]) cancelComboPlan(me);
+      }
       else {
-        const nearLink = foe.hurt > 0 && !foe.recovery && Math.abs(foe.x - me.x) <= state.hitRange + 52;
-        if (nearLink && (me.comboPlan.linkRetryCount || 0) < 1) { me.comboPlan.linkRetryCount = 1; me.combo.timer = Math.max(me.combo.timer, .45); me.cd = .02; }
+        const juggleAlive = !foe.grounded && foe.juggle > 0 && me.combo.count > 0;
+        const nearLink = (foe.hurt > 0 || juggleAlive) && !foe.recovery && Math.abs(foe.x - me.x) <= state.hitRange + (juggleAlive ? 190 : 52);
+        const retryBudget = juggleAlive ? 4 : 1;
+        if (nearLink && (me.comboPlan.linkRetryCount || 0) < retryBudget) {
+          me.comboPlan.linkRetryCount = (me.comboPlan.linkRetryCount || 0) + 1;
+          me.combo.timer = Math.max(me.combo.timer, .5); me.cd = .02;
+        }
         else cancelComboPlan(me);
       }
     }
@@ -1698,6 +1736,9 @@ function updateAttack(me, foe, dt) {
   }
 }
 function updateCombo(me, dt) {
+  // An in-progress route holds its own combo window open; otherwise a long
+  // string times out between stages and resets the counter mid-combo.
+  if (me.comboPlan && me.combo.count > 0 && me.combo.target === me.comboPlan.target) me.combo.timer = Math.max(me.combo.timer, .6);
   if (me.airComboTarget && me.airComboTimer > 0 && me.combo.target === me.airComboTarget) me.combo.timer = Math.max(me.combo.timer, .85);
   if (me.combo.timer > 0 && (me.combo.timer -= dt) <= 0) {
     if (me.airComboTarget && me.airComboTimer > 0 && me.combo.target === me.airComboTarget) me.combo.timer = .45;
@@ -1725,6 +1766,7 @@ function attemptGrapple(me, foe, state) {
     foe.vx = me.dir * 210; me.vx = -me.dir * 210;
     me.attackState.resolved = true; state.grapplePhase = "whiff";
     foe.effects.push({ kind: "impact", t: .3, x: (me.x + foe.x) / 2, y: me.y, color: "#ffffff", size: 56 });
+    playSfx("throwWhiff", { volume: .7 });
     resetCombo(me); addHitstop(.06); addShake(.1); showBanner("TECH", .5, "tech");
     me.grappleLock = .5; foe.grappleLock = .35;
     return false;
@@ -1737,6 +1779,7 @@ function attemptGrapple(me, foe, state) {
     return false;
   }
   resetCombo(me);
+  playSfx("throwCatch", { pan: panFromX(foe.x), volume: .8 });
   state.grabbed = true; state.grappled = true; state.grapplePhase = "hold";
   me.grappleTarget = foe; foe.grappledBy = me; foe.grappledState = state;
   foe.hurt = 0; foe.hitstunFrames = 0; foe.vx = 0; foe.vy = 0; foe.grounded = me.grounded;
@@ -1762,6 +1805,7 @@ function finishGrapple(me, foe, state) {
   resetCombo(me);
   // A short shared cooldown on both fighters keeps a throw from being thrown
   // right back out again the instant it recovers - the "locked in a loop" feel.
+  playSfx("throwComeout", { pan: panFromX(foe.x), volume: .85 });
   me.grappleLock = .45; foe.grappleLock = .45;
   foe.grounded = false; foe.runJump = false; foe.y = Math.max(390, foe.y - (finisher === "throw" ? 10 : 28));
   if (!foe.vy) foe.vy = -(finisher === "throw" ? 560 : 470);
@@ -1789,6 +1833,7 @@ function spawnProjectile(me,foe,state) {
   }
 }
 function applyFreeze(foe, duration, visual) {
+  playSfx("freezeCast", { pan: panFromX(foe.x), volume: .8 });
   foe.frozen = Math.max(foe.frozen || 0, duration || .95); foe.vx = 0; foe.vy = 0; foe.effects.push({ kind:"freeze", t:Math.min(.7, foe.frozen), x:foe.x, y:foe.y, color:visual?.color || "#73e7ff", size:visual?.size || 30 });
 }
 function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVariant = "ground", visual = null, knockbackOverride = null) {
@@ -1805,6 +1850,8 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
       const chip = Math.max(.5, damage * RULES.chipRatio);
       foe.hp = Math.max(0, foe.hp - chip);
       foe.guard = Math.max(0, foe.guard - (RULES.guardCostBase + damage * RULES.guardCostScale * (state?.superMove ? 2.4 : 1)));
+      if (state) state.blocked = true;
+      playSfx(isGrapple(move) ? "guardGrap" : "guardSlash", { pan: panFromX(foe.x), volume: .5 });
       foe.blockFlash = .18; foe.guardFlash = .2;
       foe.blockTimer = Math.max(foe.blockTimer, hitstun * RULES.blockstunRatio / 60);
       // Both fighters slide apart, so blocking actually resets the spacing.
@@ -1821,6 +1868,7 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
         foe.guardBroken = RULES.guardBreakStun; foe.blocking = false; foe.blockTimer = 0;
         foe.hurt = 0; foe.vx = me.dir * 120;
         foe.effects.push({ kind: "impact", t: .5, x: foe.x, y: foe.y, color: "#ffe66d", size: 92 });
+        playSfx("guardCrush", { volume: .95 });
         addShake(.3); addHitstop(.14); showBanner("GUARD BREAK", .9, "break");
       }
       return false;
@@ -1842,7 +1890,11 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   let finalDamage = damage * me.combo.scale;
   if (counter) finalDamage *= RULES.counterDamage;
   finalDamage = Math.max(.8, finalDamage);
-  me.combo.scale = Math.max(RULES.minScale, me.combo.scale * RULES.comboScaleStep);
+  // After the first couple of dozen hits the scale is already at the floor,
+  // so extra hits add spectacle and meter but almost no damage.
+  me.combo.scale = me.combo.count >= RULES.scalingFloorHits
+    ? RULES.minScale
+    : Math.max(RULES.minScale, me.combo.scale * RULES.comboScaleStep);
   me.combo.damage += finalDamage;
   const appliedHitstun = Math.round(hitstun * (counter ? RULES.counterHitstun : 1));
   foe.hp = Math.max(0, foe.hp - finalDamage);
@@ -1905,18 +1957,30 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
   // ── Presentation ─────────────────────────────────────────────────────────
   foe.trail.push({ t: .35, x: foe.x, y: foe.y });
   foe.effects.push({ kind: counter ? "counter" : "impact", t: .38, x: foe.x, y: foe.y, color: counter ? "#ffe66d" : (visual?.color || state?.visual?.color || me.fighter.config?.accent || "#ff6c61"), size: (visual?.size || state?.visual?.size || 48) * (counter ? 1.3 : 1), vfxId: visual?.hitVfx || state?.visual?.hitVfx });
-  if (counter) { foe.counterFlash = .3; showBanner("COUNTER", .55, "counter"); }
+  const grappleHit = Boolean(state?.grapple) || isGrapple(move);
+  if (counter) {
+    playSfx(grappleHit ? "counterGrap" : "counterSlash", { pan: panFromX(foe.x), volume: .9 });
+    foe.counterFlash = .3; showBanner("COUNTER", .55, "counter");
+  } else if (state?.superMove || finalDamage > 16) {
+    playSfx(grappleHit ? "hitCleanGrap" : "hitCleanSlash", { pan: panFromX(foe.x), volume: .85 });
+  } else {
+    playSfx(grappleHit ? "hitGrap" : "hitSlash", { pan: panFromX(foe.x), volume: .45 + Math.min(.35, finalDamage / 40), cooldown: .035 });
+  }
   // Hitstop scales with how much the hit actually mattered.
   const weight = Math.min(1, finalDamage / 18);
   addHitstop(clampNumber(knockback.hitstop, 0, .3, (state?.superMove ? .16 : .035 + weight * .07) * (counter ? 1.5 : 1)));
   addShake((state?.superMove ? .34 : launcher ? .2 : .09 + weight * .12) * (counter ? 1.35 : 1));
+  if (!me.comboPlan && me.combo.count >= 1 && me.combo.count <= 2 && foe.hurt > 0 && !foe.down && me.ai) {
+    // A hit landed with no route running: confirm it into one.
+    buildComboPlan(me, foe);
+  }
   showComboReadout(me, me.combo.count);
 
   // ── Juggle state ─────────────────────────────────────────────────────────
   if (launcher && wasGrounded) {
     foe.grounded = false; foe.runJump = false; foe.y = Math.max(420, foe.y - 54); foe.vy = -Math.max(RULES.launchHeight, vertical);
     foe.airComboHits = 0; foe.juggleGravity = RULES.juggleStart;
-    foe.juggle = Math.max(8, Math.min(22, move?.juggle || RULES.juggleBudget));
+    foe.juggle = Math.max(RULES.juggleBudget, Math.min(72, (Number(move?.juggle) || 4) * 6));
     me.airComboTarget = foe; me.airComboTimer = 2.9; me.airComboJumpQueued = true; me.combo.timer = Math.max(me.combo.timer, 1.25);
     foe.pendingKnockdown = RULES.hardKnockdown;
   } else if (attackVariant === "air" && !foe.grounded) {
@@ -1925,11 +1989,22 @@ function hit(me, foe, damage, label, hitstun = 14, launcher = false, attackVaria
     foe.juggleGravity = Math.min(RULES.maxJuggleGravity, (foe.juggleGravity || 1) + RULES.juggleGravityStep);
     foe.juggle = Math.max(0, (foe.juggle || 0) - Math.max(1, Number(move?.juggleCost) || RULES.juggleCostDefault));
     foe.airComboHits = (foe.airComboHits || 0) + 1;
-    foe.vy = -Math.max(230, vertical || 260) / Math.max(.9, foe.juggleGravity);
+    // Re-float scales with how deep the combo already is, so the tail of a long
+    // air string still has something to hit instead of watching them drop out.
+    const floatBoost = 1 + Math.min(.5, me.combo.count * .02);
+    foe.vy = -Math.max(300, (vertical || 300) * floatBoost) / Math.max(.9, foe.juggleGravity);
     foe.y = Math.max(330, foe.y - 10);
-    me.airComboTarget = foe; me.airComboTimer = Math.max(me.airComboTimer, foe.juggle > 0 ? 1.9 : .7); me.combo.timer = Math.max(me.combo.timer, 1.1);
-    const airPush = Math.max(95, horizontal * .72);
-    foe.vx = direction ? direction * airPush : me.dir * airPush;
+    me.airComboTarget = foe; me.airComboTimer = Math.max(me.airComboTimer, foe.juggle > 0 ? 2.6 : .7); me.combo.timer = Math.max(me.combo.timer, 1.3);
+    // Air hits carry rather than blast away: a juggle that shoves the victim
+    // out of range on every hit can never become a real string. Later hits in
+    // a combo carry harder, and the attacker drifts along with them.
+    const carryTightness = Math.min(.85, .35 + me.combo.count * .04);
+    const airPush = Math.max(40, horizontal * (1 - carryTightness));
+    foe.vx = (direction || me.dir) * airPush;
+    if (me.airComboTarget === foe && foe.juggle > 0) {
+      me.vx = me.vx * (1 - carryTightness) + foe.vx * carryTightness;
+      me.x = Math.max(RULES.wallLeft, Math.min(RULES.wallRight, foe.x - me.dir * 78));
+    }
     foe.pendingKnockdown = RULES.softKnockdown;
   } else if (!wasGrounded) {
     foe.pendingKnockdown = RULES.softKnockdown;
@@ -1954,6 +2029,7 @@ function updatePhysics(me, dt) {
     me.vx = -Math.sign(me.vx || 1) * 260; me.vy = -320; me.grounded = false;
     me.pendingKnockdown = RULES.hardKnockdown;
     me.effects.push({ kind: "impact", t: .5, x: me.x, y: me.y, color: slam.visual?.color || "#ffffff", size: 96, vfxId: slam.visual?.hitVfx });
+    playSfx("quake", { pan: panFromX(me.x), volume: .9 }); playSfx("boneCrack", { pan: panFromX(me.x), volume: .6 });
     addShake(.44); addHitstop(.13); showBanner("WALL SLAM", .7, "break");
   }
   if (me.x <= RULES.wallLeft && me.vx < 0) me.vx *= .4;
@@ -1966,6 +2042,7 @@ function updatePhysics(me, dt) {
     if (me.y >= RULES.floorY) {
       me.y = RULES.floorY; me.vy = 0; me.grounded = true; me.runJump = false;
       me.juggle = 0; me.airComboHits = 0; me.airComboTarget = null; me.airComboTimer = 0; me.airComboJumpQueued = false;
+      if (!me.pendingKnockdown || (me.hurt <= 0 && me.guardBroken <= 0)) playSfx("land", { pan: panFromX(me.x), volume: .3, cooldown: .08 });
       if (me.pendingKnockdown && (me.hurt > 0 || me.guardBroken > 0)) {
         // Landing out of hitstun is a knockdown, not an instant recovery. This
         // is the beat that gives the round its rhythm.
@@ -1974,6 +2051,7 @@ function updatePhysics(me, dt) {
         me.hurt = 0; me.hitstunFrames = 0; me.attackState = null; me.attack = 0;
         me.juggleGravity = 1; me.pose = "down";
         me.effects.push({ kind: "impact", t: .34, x: me.x, y: me.y, color: "#cfd8e3", size: 54 });
+        playSfx("knockdown", { pan: panFromX(me.x), volume: .7 });
         addShake(.12);
       } else me.pose = "idle";
       me.pendingKnockdown = 0; me.juggleGravity = 1;
@@ -2038,6 +2116,7 @@ function updateProjectilePath(projectile, dt) {
 }
 function explodeBomb(bomb) {
   if (bomb.exploding) return;
+  playSfx("explode", { pan: panFromX(bomb.x), volume: .9 });
   bomb.exploding = true; bomb.vx = 0; bomb.armed = -1; bomb.life = .36;
   if (bombHitboxConnects(bomb)) hit(bomb.owner, bomb.target, bomb.damage, bomb.label, bomb.hitstun, false, "ground", bomb.visual, bomb.knockback);
   battle.shake = Math.max(battle.shake || 0, .22);
@@ -2067,7 +2146,7 @@ function finishRound(winner, reason = "K.O.") {
   battle.hitstop = 0;
   const loser = winner === null ? null : battle.fighters[winner === 0 ? 1 : 0];
   camera.focus = loser;
-  if (reason === "K.O.") { addShake(.42); addHitstop(.22); }
+  if (reason === "K.O.") { playSfx("ko", { volume: 1 }); addShake(.42); addHitstop(.22); }
   for (const f of battle.fighters) { cancelComboPlan(f); if (f.grappleTarget) releaseGrapple(f); }
 }
 function awardRound() {
@@ -2087,6 +2166,7 @@ function nextRound() {
   if (battle.wins[0] >= RULES.roundsToWin || battle.wins[1] >= RULES.roundsToWin || battle.round >= 5) {
     battle.phase = "done";
     const champ = battle.wins[0] === battle.wins[1] ? null : battle.wins[0] > battle.wins[1] ? battle.left : battle.right;
+    playSfx("matchWin", { volume: .9 });
     showBanner(champ ? `${champ.name.toUpperCase()} WINS` : "DOUBLE K.O.", 999, "win");
     $("#rematch").hidden = false;
     return;
@@ -2484,3 +2564,4 @@ async function loadSprites() {
   spriteThumbs.kung=cropToData(225,0,300,415); spriteThumbs.cyber=cropToData(905,0,375,415); renderRoster();
 }
 function loop(t){const dt=Math.min(.05,(t-lastFrame)/1000||0);lastFrame=t;fightTick(dt);requestAnimationFrame(loop);} requestAnimationFrame(loop);requestAnimationFrame(draw); loadRoster();loadSprites();
+window.__battle = () => battle;

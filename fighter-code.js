@@ -49,7 +49,9 @@ export function sanitizeFighter(raw = {}, normalizeMove, fallback = {}) {
   };
   const moves = Array.isArray(source.specials) && source.specials.length ? source.specials : (Array.isArray(fallback.specials) ? fallback.specials : []);
   const seen = new Set();
-  config.specials = moves.slice(0, 5).map((move) => normalizeMove(move, config)).filter((move) => {
+  // Up to 3 quick normals plus 4 flashier specials - see editor.js for how the
+  // two are split back apart for editing.
+  config.specials = moves.slice(0, 7).map((move) => normalizeMove(move, config)).filter((move) => {
     const key = move.name.toLowerCase();
     if (!key || seen.has(key)) return false;
     seen.add(key);
@@ -77,6 +79,9 @@ function serializableMove(move) {
     animation: move.animation
   };
   if (Number(move.reach) > 0) output.reach = move.reach;
+  // Inert to the fight engine - only used by the editor to redraw a saved
+  // fighter's moves into the right "normal" or "special" list.
+  if (move.category === "normal" || move.category === "special") output.category = move.category;
   return output;
 }
 
