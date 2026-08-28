@@ -15,8 +15,6 @@
         </div>
         <nav class="tabs" aria-label="Fighter Forge sections">
           <span class="tab active"><span>01</span>SELECT</span>
-          <a class="tab" href="editor.html"><span>02</span>EDITOR ↗</a>
-          <a class="tab" href="stages.html"><span>03</span>STAGES ↗</a>
         </nav>
         <div class="top-status"><button id="sfx-toggle" class="sfx-toggle" type="button" aria-pressed="true" title="Toggle sound">♪ SOUND</button><i></i><span>SIMULATION ONLINE</span><b id="fighter-count">1 FIGHTER</b></div>
       </header>
@@ -31,15 +29,17 @@
             <canvas id="arena" width="1280" height="720"></canvas>
             <div class="scanlines"></div>
             <div class="match-ui">
-              <div class="nameplate left"><span id="left-name">KUNG FU MAN</span><b id="left-wins">0</b><div class="health"><i id="left-hp"></i></div><div class="guard"><i id="left-guard"></i></div><div class="meter"><i id="left-meter"></i></div></div>
+              <div class="nameplate left"><span id="left-name">KUNG FU MAN</span><b id="left-wins">0</b><div class="health"><i id="left-hp"></i></div><div class="guard"><i id="left-guard"></i></div><div class="meter"><i id="left-meter"></i></div><div class="momentum" id="left-momentum"><i></i><b>MOMENTUM</b></div><div class="heartbeat" id="left-heartbeat"><i></i><b>HEARTBEAT</b></div></div>
               <div class="round-display"><span id="mode-label">READY ROOM</span><strong id="round-text">SELECT</strong><em id="timer">--</em></div>
-              <div class="nameplate right"><span id="right-name">KUNG FU MAN</span><b id="right-wins">0</b><div class="health"><i id="right-hp"></i></div><div class="guard"><i id="right-guard"></i></div><div class="meter"><i id="right-meter"></i></div></div>
+              <div class="nameplate right"><span id="right-name">KUNG FU MAN</span><b id="right-wins">0</b><div class="health"><i id="right-hp"></i></div><div class="guard"><i id="right-guard"></i></div><div class="meter"><i id="right-meter"></i></div><div class="momentum" id="right-momentum"><i></i><b>MOMENTUM</b></div><div class="heartbeat" id="right-heartbeat"><i></i><b>HEARTBEAT</b></div></div>
             </div>
             <div id="banter" class="banter" aria-live="polite"><span class="banter-speaker"></span><span class="banter-text"></span></div>
             <div id="move-callout" class="move-callout" aria-live="polite"><span class="move-callout-type">MOVE</span><strong id="move-callout-name"></strong><small id="move-callout-detail"></small></div>
             <div id="combo-readout" class="combo-readout" aria-live="polite"></div>
             <div id="result" class="result" aria-live="polite"></div>
+            <div id="round-card" class="round-card" aria-live="polite"><span class="rc-label">ROUND</span><strong class="rc-num">1</strong><span class="rc-fight">FIGHT!</span></div>
             <button id="rematch" class="rematch" hidden>RUN IT BACK <span>↗</span></button>
+            <button id="back-to-select" class="back-to-select" hidden>← CHARACTER SELECT</button>
             <div class="arena-footer"><span>GROUND / TRAINING DECK</span><span>FIGHTERS THINK FOR THEMSELVES</span></div>
           </div>
         </section>
@@ -62,12 +62,8 @@
             <div class="stage-picker">
               <div class="stage-picker-head"><strong>STAGE</strong><small id="stage-status">Default arena</small></div>
               <div id="stage-strip" class="stage-strip" role="listbox" aria-label="Battle stages"></div>
-              <div class="stage-picker-actions">
-                <a class="secondary" href="stages.html">STAGE EDITOR <span>↗</span></a>
-              </div>
             </div>
-            <div class="select-actions">
-              <a class="secondary create-fighter-link" href="editor.html">CREATE <span>↗</span></a>
+            <div class="select-actions select-actions-no-forge">
               <button id="random-pick" class="secondary">RANDOM</button>
               <button id="mirror-pick" class="secondary">MIRROR</button>
               <button id="start-match" class="primary full">START MATCH <span>↗</span></button>

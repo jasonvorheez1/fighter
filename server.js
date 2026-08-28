@@ -58,6 +58,22 @@ export default {
       const { url: blobUrl } = await env.BLOB.put("fighter-sfx.wav", bytes, { contentType: "audio/wav" });
       return json({ url: blobUrl });
     }
+    // Fallback for portrait uploads when the browser-side platform uploader
+    // is unavailable or rejects a valid signed-in upload. Keep the bytes out
+    // of D1; the fighter row stores only the returned public blob URL.
+    if (url.pathname === "/api/fighter-image" && request.method === "POST") {
+      if (!userId) return json({ error: "Sign in to upload a fighter portrait." }, 401);
+      const contentType = (request.headers.get("content-type") || "").toLowerCase().split(";")[0];
+      if (!contentType.startsWith("image/")) return json({ error: "Portraits must be image files." }, 400);
+      const bytes = await request.arrayBuffer();
+      if (!bytes.byteLength || bytes.byteLength > 5 * 1024 * 1024) return json({ error: "Portraits must be under 5 MB." }, 400);
+      try {
+        const { url: blobUrl } = await env.BLOB.put("fighter-portrait-" + crypto.randomUUID(), bytes, { contentType });
+        return json({ url: blobUrl });
+      } catch {
+        return json({ error: "Portrait storage is temporarily unavailable. Try again." }, 503);
+      }
+    }
     if (url.pathname === "/api/fighters" && request.method === "GET") {
       if (!userId) return json({ fighters: [] });
       const { results } = await env.DB.prepare("SELECT id, name, author, prompt, config, script, portrait_url, created_at FROM fighters WHERE user_id = ? ORDER BY created_at DESC LIMIT 40").bind(userId).all();

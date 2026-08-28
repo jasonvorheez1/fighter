@@ -40,6 +40,20 @@ canvas { width:100%; height:100%; min-height:0; display:block; object-fit:cover;
 .health { height:15px; padding:2px; background:#101116aa; border:1px solid #000; grid-column:1 / -1; }
 .health i { display:block; width:100%; height:100%; background:linear-gradient(90deg,var(--lime),#70eb82); transition:width .2s; }
 .right .health i { margin-left:auto; background:linear-gradient(90deg,#ff8a5c,#ffd05d); }
+.momentum { display:none; position:relative; grid-column:1 / -1; height:8px; overflow:visible; background:#071522; border:1px solid #234d69; }
+.momentum i { display:block; width:0; height:100%; background:linear-gradient(90deg,#168fea,#7cecff); box-shadow:0 0 8px #2fc9ff; transition:width .12s; }
+.momentum b { position:absolute; right:3px; bottom:7px; color:#66dfff; font:7px 'DM Mono',monospace; letter-spacing:1px; opacity:.82; }
+.momentum[data-level="1"] i { background:linear-gradient(90deg,#168fea,#7cecff); }
+.momentum[data-level="2"] i { background:linear-gradient(90deg,#168fea,#d6fbff); box-shadow:0 0 12px #71eaff; }
+.momentum[data-level="3"] { border-color:#e4fbff; animation:momentum-pulse .7s ease-in-out infinite alternate; }
+.momentum[data-level="3"] i { background:linear-gradient(90deg,#4bd9ff,#ffffff,#5ba9ff); box-shadow:0 0 16px #b4f7ff; }
+@keyframes momentum-pulse { from { box-shadow:0 0 3px #6bdfff; } to { box-shadow:0 0 13px #d7fbff; } }
+.heartbeat { display:none; position:relative; grid-column:1 / -1; height:8px; overflow:visible; background:#26101e; border:1px solid #713256; }
+.heartbeat i { display:block; width:0; height:100%; background:linear-gradient(90deg,#e82f86,#ffb7d8); box-shadow:0 0 8px #ff4e9b; transition:width .14s; }
+.heartbeat b { position:absolute; right:3px; bottom:7px; color:#ff9bc4; font:7px 'DM Mono',monospace; letter-spacing:1px; opacity:.86; }
+.heartbeat[data-level="3"] { border-color:#fff0f8; animation:heartbeat-pulse .58s ease-in-out infinite alternate; }
+.heartbeat[data-level="3"] i { background:linear-gradient(90deg,#ff4e9b,#fff0a6,#ff78b9); box-shadow:0 0 16px #ff9ac7; }
+@keyframes heartbeat-pulse { from { box-shadow:0 0 3px #ff4e9b; } to { box-shadow:0 0 13px #ffd1e5; } }
 .round-display { display:grid; justify-items:center; gap:0; text-align:center; }
 .round-display span { padding:3px 9px; border:1px solid #fff4; border-radius:99px; background:#101116aa; font:9px 'DM Mono',monospace; letter-spacing:1px; }
 .round-display strong { margin-top:3px; font-size:27px; letter-spacing:2px; }
@@ -548,7 +562,7 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 
 /* ── Guard and super meters ──────────────────────────────────────────────── */
 .guard, .meter { grid-column:1 / -1; padding:1px; background:#0a0d12aa; border:1px solid #00000099; }
-.guard { height:7px; }
+.guard { height:7px; position:relative; overflow:visible; }
 .meter { height:9px; }
 .guard i, .meter i { display:block; width:100%; height:100%; transition:width .12s linear; }
 .guard i { background:linear-gradient(90deg,#69d7ff,#bdf6ff); }
@@ -556,9 +570,17 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .right .guard i, .right .meter i { margin-left:auto; }
 .nameplate.charged .meter { box-shadow:0 0 0 1px #ffd05d, 0 0 14px #ffd05d88; }
 .nameplate.charged .meter i { background:linear-gradient(90deg,#ffd05d,#fff6cf,#ffd05d); animation:meter-charged .7s linear infinite; }
+.nameplate.push-ready:not(.charged) .meter { box-shadow:0 0 0 1px #8fe4ff, 0 0 10px #8fe4ff66; }
+.nameplate.push-ready:not(.charged) .meter i { background:linear-gradient(90deg,#69d7ff,#d9fbff); }
 @keyframes meter-charged { 0% { filter:brightness(1); } 50% { filter:brightness(1.6); } 100% { filter:brightness(1); } }
 .arena-page .guard { height:9px; border:2px solid #05080c; }
 .arena-page .meter { height:12px; border:2px solid #05080c; }
+.nameplate.guard-danger .guard { border-color:#ff6c61; box-shadow:0 0 0 1px #ff6c61aa, 0 0 13px #ff405c66; animation:guard-danger-pulse .42s ease-in-out infinite alternate; }
+.nameplate.guard-danger .guard i { background:linear-gradient(90deg,#ff405c,#ffd05d); }
+.nameplate.guard-broken .guard { border-color:#ffe66d; box-shadow:0 0 0 1px #ff9f43, 0 0 18px #ff9f4388; }
+.nameplate.guard-broken .guard i { width:100% !important; background:repeating-linear-gradient(135deg,#ffe66d 0 7px,#ff7043 7px 12px); animation:guard-broken-stripes .3s linear infinite; }
+@keyframes guard-danger-pulse { from { filter:brightness(1); } to { filter:brightness(1.55); } }
+@keyframes guard-broken-stripes { to { background-position:12px 0; } }
 
 /* ── Round banner tones ──────────────────────────────────────────────────── */
 .result[data-tone="go"] { color:#d8ff3e; }
@@ -568,6 +590,23 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
 .result[data-tone="perfect"] { color:#ffd05d; }
 .result[data-tone="draw"] { color:#9fb3c8; }
 .result[data-tone="win"] { color:#ff6c61; }
+.result[data-tone="ko"] { color:#ff5c68; font-size:clamp(62px,10vw,144px); letter-spacing:8px; text-shadow:0 0 18px #ff405c88, 6px 6px #101014; }
+.result[data-tone="round-ko"] { color:#ff6c61; }
+
+/* ── Round card intro ────────────────────────────────────────────────────── */
+.round-card { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; pointer-events:none; opacity:0; background:rgba(4,6,14,.72); transition:opacity .22s; z-index:12; }
+.round-card.show { opacity:1; }
+.round-card.exit { opacity:0; transition:opacity .18s; }
+.rc-label { color:var(--cyan); font:900 12px 'DM Mono',monospace; letter-spacing:10px; text-transform:uppercase; opacity:0; transform:translateY(10px); transition:opacity .22s,transform .22s cubic-bezier(.2,.9,.25,1); }
+.round-card.show .rc-label { opacity:1; transform:none; }
+.rc-num { font:900 clamp(88px,13vw,172px) 'DM Mono',monospace; color:#fff; line-height:.88; text-shadow:6px 6px #080810,0 0 50px #ffffff33; opacity:0; transform:scale(1.12); transition:opacity .2s .08s,transform .2s .08s cubic-bezier(.16,.9,.22,1); }
+.round-card.show .rc-num { opacity:1; transform:scale(1); }
+.rc-fight { font:900 clamp(34px,5.6vw,76px) 'DM Mono',monospace; color:#d8ff3e; letter-spacing:7px; text-shadow:4px 4px #080810,0 0 28px #d8ff3e55; margin-top:10px; opacity:0; transform:scale(1.18); transition:none; }
+.round-card.show.fight .rc-fight { opacity:1; transform:scale(1); transition:opacity .13s,transform .13s cubic-bezier(.12,.9,.18,1); }
+
+/* ── Back to character select button ─────────────────────────────────────── */
+.back-to-select { position:absolute; bottom:clamp(54px,8%,80px); left:50%; transform:translateX(-50%) translateX(-110px); background:none; border:1.5px solid #ffffff44; color:#ffffffaa; font:700 11px 'DM Mono',monospace; letter-spacing:2px; padding:8px 16px; border-radius:3px; cursor:pointer; transition:border-color .15s,color .15s; }
+.back-to-select:hover { border-color:#ffffffcc; color:#fff; }
 
 /* ── Character select: roster + dossier ──────────────────────────────────── */
 .select-body { min-height:0; display:contents; }
@@ -880,4 +919,106 @@ pre { max-height:220px; margin:0 0 10px; overflow:auto; padding:10px; color:#bff
   .arena-page:not(.in-match) .select-header-meta { gap:6px; }
   .arena-page:not(.in-match) .select-slot { grid-template-columns:54px minmax(0,1fr); }
   .arena-page:not(.in-match) .slot-portrait { width:54px; height:68px; }
+}
+
+/* Character select polish: give the fighter readout and roster equal weight. */
+@media (min-width:651px) {
+  .arena-page:not(.in-match) .select-slot {
+    min-height:112px;
+    display:grid;
+    grid-template-columns:132px minmax(0,1fr);
+    grid-template-rows:auto auto auto;
+    column-gap:14px;
+    align-items:center;
+    padding:11px 13px;
+  }
+
+  .arena-page:not(.in-match) .select-slot .slot-label { grid-column:1 / -1; }
+  .arena-page:not(.in-match) .select-slot .slot-portrait {
+    grid-column:1;
+    grid-row:2 / span 2;
+    width:132px;
+    height:78px;
+  }
+  .arena-page:not(.in-match) .select-slot strong,
+  .arena-page:not(.in-match) .select-slot small,
+  .arena-page:not(.in-match) .select-slot em { grid-column:2; }
+  .arena-page:not(.in-match) .select-slot strong { align-self:end; }
+  .arena-page:not(.in-match) .select-slot em { align-self:start; }
+
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] {
+    grid-template-columns:minmax(0,1fr) 132px;
+    text-align:right;
+  }
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] .slot-portrait { grid-column:2; }
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] strong,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] small,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] em { grid-column:1; }
+
+  .arena-page:not(.in-match) .stage-picker {
+    margin:8px 0 10px;
+    padding:9px 10px;
+  }
+  .arena-page:not(.in-match) .stage-strip { padding:6px 0 2px; }
+  .arena-page:not(.in-match) .stage-tile { height:48px; flex-basis:112px; }
+  .arena-page:not(.in-match) .stage-picker-actions .secondary {
+    margin-top:4px;
+    padding:6px 10px;
+  }
+
+  .arena-page:not(.in-match) .dossier {
+    min-height:188px;
+    border-color:#56d9ff66;
+    background:linear-gradient(145deg,#111d27,#0b1219 72%);
+  }
+  .arena-page:not(.in-match) .dossier-top {
+    padding-bottom:10px;
+    border-bottom:1px solid #56d9ff2e;
+  }
+  .arena-page:not(.in-match) .dossier-stats {
+    grid-template-columns:1fr 1fr;
+    column-gap:12px;
+  }
+  .arena-page:not(.in-match) .dossier-moves li {
+    border-left:2px solid #b9ff39aa;
+    background:#071016;
+  }
+
+  .arena-page:not(.in-match) .fighter-card {
+    background:linear-gradient(145deg,#14232c,#0d171e);
+    transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  }
+  .arena-page:not(.in-match) .fighter-card:hover,
+  .arena-page:not(.in-match) .fighter-card.focused {
+    transform:translateY(-3px);
+    border-color:#56d9ff;
+    box-shadow:0 7px 0 #02070b99, 0 0 18px #56d9ff22;
+  }
+  .arena-page:not(.in-match) .fighter-card.selected {
+    border-color:#b9ff39;
+    box-shadow:inset 0 3px #b9ff39, 0 7px 0 #02070b99, 0 0 20px #b9ff3930;
+  }
+}
+
+@media (max-width:650px) {
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] {
+    grid-template-columns:64px minmax(0,1fr);
+    text-align:left;
+  }
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] .slot-portrait,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] strong,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] small,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] em { grid-column:initial; }
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] .slot-portrait { grid-column:1; }
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] strong,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] small,
+  .arena-page:not(.in-match) .select-slot[data-slot="1"] em { grid-column:2; }
+  .arena-page:not(.in-match) .stage-picker { margin-top:8px; padding:9px; }
+  .arena-page:not(.in-match) .stage-tile { height:52px; }
+}
+
+@media (min-width:651px) {
+  .arena-page:not(.in-match) .select-actions-no-forge {
+    grid-template-columns:repeat(2,minmax(0,max-content)) minmax(180px,1fr);
+  }
 }

@@ -103,13 +103,19 @@ function serializableMove(move) {
     behavior: move.behavior,
     animation: move.animation
   };
+  // Combo links are authored by name so they survive editor/database round
+  // trips without embedding live move objects. Heavy attacks are intentional
+  // route enders and never serialize a sequel list.
+  if (move.variant !== "heavy" && Array.isArray(move.combosInto) && move.combosInto.length) {
+    output.combosInto = move.combosInto.slice(0, 4).map(name => String(name).trim()).filter(Boolean);
+  }
   if (Number(move.reach) > 0) output.reach = move.reach;
   // Inert to the fight engine - only used by the editor to redraw a saved
   // fighter's moves into the right "normal" or "special" list.
   if (move.category === "normal" || move.category === "special") output.category = move.category;
   // A follow-up is a whole move in its own right, so it round-trips through the
   // same serializer - one level deep, which is all the engine allows.
-  if (move.followUp) {
+  if (move.variant !== "heavy" && move.followUp) {
     output.followUp = serializableMove(move.followUp);
     output.followUpWindow = move.followUpWindow;
   }

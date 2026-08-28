@@ -42,7 +42,8 @@ export const VFX_GROUPS = [
       sequence("hit_symmetrical_3", "Symmetrical Impact C", "hit-spark", "symmetricalmipact3__", 7, ["center", "burst", "sharp"], { suffix: "_.png", note: "Sharp star-shaped contact" }),
       sequence("hit_stylized_explosion", "Stylized Explosion", "hit-spark", "stylizedexplosion__", 14, ["explosion", "heavy", "finisher"], { suffix: "_.png", note: "Large finisher impact" }),
       sequence("hit_vfx_pack", "VFX Hit Pack", "hit-spark", "VFX_1_Hit", 8, ["pack", "burst", "medium"], { note: "General purpose hit sequence" }),
-      sequence("hit_wood", "Wood Hit", "hit-spark", "Wood_VFX_01_Hit", 7, ["wood", "ground", "heavy"], { note: "Earthy impact for slams and body blows" })
+      sequence("hit_wood", "Wood Hit", "hit-spark", "Wood_VFX_01_Hit", 7, ["wood", "ground", "heavy"], { note: "Earthy impact for slams and body blows" }),
+      single("hit_prismatic_impact", "Prismatic Impact", "hit-spark", "generated-vfx/prismatic_impact.png", ["generated", "burst", "sharp"], "Generated cyan/magenta radial impact with crystal shards")
     ]
   },
   {
@@ -61,7 +62,9 @@ export const VFX_GROUPS = [
       sequence("main_wood_repeatable", "Wood Repeatable", "main-effect", "Wood_VFX_01_Repeatable", 8, ["wood", "loop", "ground"], { note: "Repeatable earthy move layer" }),
       sequence("main_firework", "Round Firework", "main-effect", "roundfireworkburst__", 18, ["burst", "special", "finisher"], { suffix: "_.png", note: "Big radial special effect" }),
       sequence("main_musicburst", "Directional Music Burst", "main-effect", "diriectionalmusicburst1__", 18, ["directional", "burst", "special"], { suffix: "_.png", note: "Directional energy release" }),
-      sequence("main_stylized_explosion", "Stylized Explosion", "main-effect", "stylizedexplosion__", 14, ["explosion", "special", "finisher"], { suffix: "_.png", note: "Large stylized move climax" })
+      sequence("main_stylized_explosion", "Stylized Explosion", "main-effect", "stylizedexplosion__", 14, ["explosion", "special", "finisher"], { suffix: "_.png", note: "Large stylized move climax" }),
+      single("main_guard_push_burst", "Guard Push Burst", "main-effect", "generated-vfx/guard_push_burst.png", ["generated", "guard", "push"], "Generated defensive ring burst for guard push and parry moments"),
+      single("main_rebound_spiral", "Rebound Spiral", "main-effect", "generated-vfx/rebound_spiral.png", ["generated", "bounce", "launch"], "Generated rising spiral for ground and wall bounce extensions")
     ]
   },
   {
